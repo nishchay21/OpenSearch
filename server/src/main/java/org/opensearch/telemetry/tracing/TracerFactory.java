@@ -14,6 +14,7 @@ import org.opensearch.common.annotation.InternalApi;
 import org.opensearch.common.util.concurrent.ThreadContext;
 import org.opensearch.telemetry.Telemetry;
 import org.opensearch.telemetry.TelemetrySettings;
+import org.opensearch.telemetry.TelemetryStorageService;
 import org.opensearch.telemetry.tracing.noop.NoopTracer;
 
 import java.io.Closeable;
@@ -69,6 +70,13 @@ public class TracerFactory implements Closeable {
         return new ThreadContextBasedTracerContextStorage(threadContext, tracingTelemetry);
     }
 
+    protected TracerContextStorage<String, TraceSampleDecision> createSampledTracerContextStorage(
+        TracingTelemetry tracingTelemetry,
+        ThreadContext threadContext
+    ) {
+        return new SampledContextTracerStorage(threadContext, tracingTelemetry);
+    }
+
     private Tracer tracer(Optional<Telemetry> telemetry, ThreadContext threadContext) {
         return telemetry.map(Telemetry::getTracingTelemetry)
             .map(tracingTelemetry -> createDefaultTracer(tracingTelemetry, threadContext))
@@ -78,7 +86,9 @@ public class TracerFactory implements Closeable {
 
     private Tracer createDefaultTracer(TracingTelemetry tracingTelemetry, ThreadContext threadContext) {
         TracerContextStorage<String, Span> tracerContextStorage = createTracerContextStorage(tracingTelemetry, threadContext);
-        return new DefaultTracer(tracingTelemetry, tracerContextStorage);
+        TracerContextStorage<String, TraceSampleDecision> sampledTracerContextStorage = createSampledTracerContextStorage(tracingTelemetry, threadContext);
+
+        return new DefaultTracer(tracingTelemetry, tracerContextStorage, sampledTracerContextStorage);
     }
 
     private Tracer createWrappedTracer(Tracer defaultTracer) {

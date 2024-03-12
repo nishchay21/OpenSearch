@@ -46,10 +46,13 @@ import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.transport.TransportAddress;
 import org.opensearch.core.transport.TransportResponse;
+import org.opensearch.telemetry.TelemetryStorageService;
 import org.opensearch.telemetry.tracing.Span;
 import org.opensearch.telemetry.tracing.SpanBuilder;
 import org.opensearch.telemetry.tracing.SpanScope;
+import org.opensearch.telemetry.tracing.TraceSampleDecision;
 import org.opensearch.telemetry.tracing.Tracer;
+import org.opensearch.telemetry.tracing.TracerContextStorage;
 import org.opensearch.telemetry.tracing.channels.TraceableTcpTransportChannel;
 import org.opensearch.threadpool.ThreadPool;
 
@@ -140,6 +143,26 @@ public class InboundHandler {
             // Place the context with the headers from the message
             threadContext.setHeaders(header.getHeaders());
             threadContext.putTransient("_remote_address", remoteAddress);
+            String sampleInformation = message.getHeader().getHeaders().v1().getOrDefault(TracerContextStorage.SAMPLED, "");
+            System.out.println(".......INBOUND HANDLER......");
+            System.out.println("Sample information:" + sampleInformation);
+            System.out.println("Inbound Thread " + Thread.currentThread().getName());
+            if (sampleInformation.length()>0) {
+                String traceId = sampleInformation.split("-")[0];
+                boolean decision = sampleInformation.split("-")[1].equals("true");
+                if (decision) {
+                    TraceSampleDecision sampleDecision = threadContext.getTransient(TracerContextStorage.SAMPLED);
+                    if (sampleDecision == null) {
+                        sampleDecision = new TraceSampleDecision(traceId, true);
+                        threadContext.putTransient(TracerContextStorage.SAMPLED, sampleDecision);
+                    } else {
+                        sampleDecision.setTraceID(traceId);
+                        sampleDecision.setSamplingDecision(true);
+                    }
+                    // TelemetryStorageService.traceSampleStorage.putIfAbsent(traceId, true);
+                    System.out.println("Sampel Object: " + sampleDecision);
+                }
+            }
             if (header.isRequest()) {
                 handleRequest(channel, header, message);
             } else {
@@ -409,8 +432,11 @@ public class InboundHandler {
         }
         final String executor = handler.executor();
         if (ThreadPool.Names.SAME.equals(executor)) {
+            System.out.println("Same");
+            System.out.println(handler);
             doHandleResponse(handler, response);
         } else {
+            System.out.print("Executor");
             threadPool.executor(executor).execute(() -> doHandleResponse(handler, response));
         }
     }

@@ -10,6 +10,8 @@ package org.opensearch.test.telemetry.tracing;
 
 import org.opensearch.telemetry.tracing.Span;
 import org.opensearch.telemetry.tracing.SpanCreationContext;
+import org.opensearch.telemetry.tracing.TraceSampleDecision;
+import org.opensearch.telemetry.tracing.TracerContextStorage;
 import org.opensearch.telemetry.tracing.TracingContextPropagator;
 import org.opensearch.telemetry.tracing.TracingTelemetry;
 
@@ -28,8 +30,17 @@ public class MockTracingTelemetry implements TracingTelemetry {
      */
     public MockTracingTelemetry() {}
 
+
+    /**
+     * Creates span with provided arguments
+     *
+     * @param spanCreationContext  span creation context.
+     * @param parentSpan           parent span.
+     * @param tracerContextStorage trace storage
+     * @return span instance
+     */
     @Override
-    public Span createSpan(SpanCreationContext spanCreationContext, Span parentSpan) {
+    public Span createSpan(SpanCreationContext spanCreationContext, Span parentSpan, TracerContextStorage<String, TraceSampleDecision> tracerContextStorage) {
         Span span = new MockSpan(spanCreationContext, parentSpan, spanProcessor);
         if (shutdown.get() == false) {
             spanProcessor.onStart(span);

@@ -68,10 +68,11 @@ public class TraceableTransportResponseHandler<T extends TransportResponse> impl
 
     @Override
     public void handleResponse(T response) {
+        System.out.println("Transport Thread: " + Thread.currentThread().getName());
         try (SpanScope scope = tracer.withSpanInScope(span)) {
-            delegate.handleResponse(response);
-        } finally {
             span.endSpan();
+        } finally {
+            delegate.handleResponse(response);
         }
     }
 

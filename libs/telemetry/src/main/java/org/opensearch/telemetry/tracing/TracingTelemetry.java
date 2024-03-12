@@ -25,9 +25,10 @@ public interface TracingTelemetry extends Closeable {
      *
      * @param spanCreationContext span creation context.
      * @param parentSpan parent span.
+     * @param tracerContextStorage trace storage
      * @return span instance
      */
-    Span createSpan(SpanCreationContext spanCreationContext, Span parentSpan);
+    Span createSpan(SpanCreationContext spanCreationContext, Span parentSpan, TracerContextStorage<String, TraceSampleDecision> tracerContextStorage);
 
     /**
      * provides tracing context propagator

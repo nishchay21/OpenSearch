@@ -86,12 +86,16 @@ public class TraceableTcpTransportChannel extends BaseTcpTransportChannel {
     @Override
     public void sendResponse(TransportResponse response) throws IOException {
         try (SpanScope scope = tracer.withSpanInScope(span)) {
-            delegate.sendResponse(response);
-        } catch (final IOException ex) {
-            span.setError(ex);
-            throw ex;
-        } finally {
+            System.out.println(".... Traceable TCP transport......");
+            System.out.println(span.getSpanName() + " " + span.getSpanId() + " " + span.getAttributes().toString() + " " + span.getTraceId());
             span.endSpan();
+        } finally {
+            try {
+                delegate.sendResponse(response);
+            } catch (final IOException ex) {
+                span.setError(ex);
+                throw ex;
+            }
         }
     }
 

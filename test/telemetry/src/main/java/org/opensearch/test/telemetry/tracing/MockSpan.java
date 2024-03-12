@@ -100,6 +100,16 @@ public class MockSpan extends AbstractSpan {
         spanProcessor.onEnd(this);
     }
 
+    /**
+     * Ends the span
+     *
+     * @param Sampled Sampled state of the span
+     */
+    @Override
+    public void endSpan(Boolean Sampled) {
+
+    }
+
     @Override
     public void addAttribute(String key, String value) {
         putMetadata(key, value);

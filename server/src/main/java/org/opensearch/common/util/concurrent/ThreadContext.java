@@ -47,6 +47,8 @@ import org.opensearch.core.common.io.stream.Writeable;
 import org.opensearch.http.HttpTransportSettings;
 import org.opensearch.tasks.Task;
 import org.opensearch.tasks.TaskThreadContextStatePropagator;
+import org.opensearch.telemetry.tracing.TraceSampleDecision;
+import org.opensearch.telemetry.tracing.TracerContextStorage;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -144,6 +146,7 @@ public final class ThreadContext implements Writeable {
      * restored by closing the returned {@link StoredContext}.
      */
     public StoredContext stashContext() {
+        System.out.println("This is stash start");
         final ThreadContextStruct context = threadLocal.get();
         /*
           X-Opaque-ID should be preserved in a threadContext in order to propagate this across threads.
@@ -169,9 +172,7 @@ public final class ThreadContext implements Writeable {
         threadLocal.set(threadContextStruct);
 
         return () -> {
-            // If the node and thus the threadLocal get closed while this task
-            // is still executing, we don't want this runnable to fail with an
-            // uncaught exception
+            System.out.println("Stash  called " + Thread.currentThread().getName());
             threadLocal.set(context);
         };
     }
@@ -241,6 +242,9 @@ public final class ThreadContext implements Writeable {
      * @param preserveResponseHeaders if set to <code>true</code> the response headers of the restore thread will be preserved.
      */
     public StoredContext newStoredContext(boolean preserveResponseHeaders, Collection<String> transientHeadersToClear) {
+        System.out.println("NEW stored Contect called");
+        System.out.println("preserveResponseHeaders: " + preserveResponseHeaders);
+        System.out.println("transients header: " + transientHeadersToClear.toString());
         final ThreadContextStruct originalContext = threadLocal.get();
         final Map<String, Object> newTransientHeaders = new HashMap<>(originalContext.transientHeaders);
 

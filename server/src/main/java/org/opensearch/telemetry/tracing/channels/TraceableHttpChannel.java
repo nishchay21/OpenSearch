@@ -80,6 +80,7 @@ public class TraceableHttpChannel implements HttpChannel {
 
     @Override
     public void sendResponse(HttpResponse response, ActionListener<Void> listener) {
+        System.out.println("Http " + Thread.currentThread().getName() + " traceID:" + span.getTraceId() + " SpanId: " + span.getSpanId());
         delegate.sendResponse(response, TraceableActionListener.create(listener, span, tracer));
     }
 

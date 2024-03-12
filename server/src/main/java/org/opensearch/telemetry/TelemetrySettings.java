@@ -23,21 +23,21 @@ import org.opensearch.common.unit.TimeValue;
 public class TelemetrySettings {
     public static final Setting<Boolean> TRACER_ENABLED_SETTING = Setting.boolSetting(
         "telemetry.tracer.enabled",
-        false,
+        true,
         Setting.Property.NodeScope,
         Setting.Property.Dynamic
     );
 
     public static final Setting<Boolean> TRACER_FEATURE_ENABLED_SETTING = Setting.boolSetting(
         "telemetry.feature.tracer.enabled",
-        false,
+        true,
         Setting.Property.NodeScope,
         Setting.Property.Final
     );
 
     public static final Setting<Boolean> METRICS_FEATURE_ENABLED_SETTING = Setting.boolSetting(
         "telemetry.feature.metrics.enabled",
-        false,
+        true,
         Setting.Property.NodeScope,
         Setting.Property.Final
     );
@@ -47,7 +47,7 @@ public class TelemetrySettings {
      */
     public static final Setting<Double> TRACER_SAMPLER_PROBABILITY = Setting.doubleSetting(
         "telemetry.tracer.sampler.probability",
-        0.01d,
+        1.00d,
         0.00d,
         1.00d,
         Setting.Property.NodeScope,

@@ -32,16 +32,19 @@ class DefaultTracer implements Tracer {
 
     private final TracingTelemetry tracingTelemetry;
     private final TracerContextStorage<String, Span> tracerContextStorage;
+    private final TracerContextStorage<String, TraceSampleDecision> sampledTracerContextStorage;
 
     /**
      * Creates DefaultTracer instance
      *
      * @param tracingTelemetry tracing telemetry instance
      * @param tracerContextStorage storage used for storing current span context
+     * @param sampledTracerContextStorage storage used
      */
-    public DefaultTracer(TracingTelemetry tracingTelemetry, TracerContextStorage<String, Span> tracerContextStorage) {
+    public DefaultTracer(TracingTelemetry tracingTelemetry, TracerContextStorage<String, Span> tracerContextStorage, TracerContextStorage<String, TraceSampleDecision> sampledTracerContextStorage) {
         this.tracingTelemetry = tracingTelemetry;
         this.tracerContextStorage = tracerContextStorage;
+        this.sampledTracerContextStorage = sampledTracerContextStorage;
     }
 
     @Override
@@ -81,7 +84,7 @@ class DefaultTracer implements Tracer {
 
     @Override
     public SpanScope withSpanInScope(Span span) {
-        return DefaultSpanScope.create(span, tracerContextStorage).attach();
+        return DefaultSpanScope.create(span, tracerContextStorage, sampledTracerContextStorage).attach();
     }
 
     @Override
@@ -90,7 +93,7 @@ class DefaultTracer implements Tracer {
     }
 
     private Span createSpan(SpanCreationContext spanCreationContext, Span parentSpan) {
-        return tracingTelemetry.createSpan(spanCreationContext, parentSpan);
+        return tracingTelemetry.createSpan(spanCreationContext, parentSpan, sampledTracerContextStorage);
     }
 
     /**

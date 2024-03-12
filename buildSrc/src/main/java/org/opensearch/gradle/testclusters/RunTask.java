@@ -175,6 +175,12 @@ public class RunTask extends DefaultTestClustersTask {
                     transportPort++;
                     node.setting("discovery.seed_hosts", LOCALHOST_ADDRESS_PREFIX + DEFAULT_TRANSPORT_PORT);
                 }
+                node.setting("opensearch.experimental.feature.telemetry.enabled", "true");
+                node.setting("telemetry.feature.metrics.enabled", "true");
+                node.setting("telemetry.feature.tracer.enabled", "true");
+                node.setting("telemetry.tracer.enabled", "true");
+                node.setting("telemetry.feature.metrics.enabled", "true");
+                node.setting("telemetry.otel.tracer.span.exporter.class", "io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter");
                 additionalSettings.forEach(node::setting);
                 if (dataDir != null) {
                     node.setDataPath(getDataPath.apply(node));

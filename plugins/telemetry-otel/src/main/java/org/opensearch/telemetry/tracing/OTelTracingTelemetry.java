@@ -46,8 +46,8 @@ public class OTelTracingTelemetry<T extends TracerProvider & Closeable> implemen
     }
 
     @Override
-    public Span createSpan(SpanCreationContext spanCreationContext, Span parentSpan) {
-        return createOtelSpan(spanCreationContext, parentSpan);
+    public Span createSpan(SpanCreationContext spanCreationContext, Span parentSpan, TracerContextStorage<String, TraceSampleDecision> sampledTracerContextStorage) {
+        return createOtelSpan(spanCreationContext, parentSpan, sampledTracerContextStorage);
     }
 
     @Override
@@ -55,14 +55,14 @@ public class OTelTracingTelemetry<T extends TracerProvider & Closeable> implemen
         return new OTelTracingContextPropagator(refCountedOpenTelemetry.get());
     }
 
-    private Span createOtelSpan(SpanCreationContext spanCreationContext, Span parentSpan) {
+    private Span createOtelSpan(SpanCreationContext spanCreationContext, Span parentSpan, TracerContextStorage<String, TraceSampleDecision> sampledTracerContextStorage) {
         io.opentelemetry.api.trace.Span otelSpan = otelSpan(
             spanCreationContext.getSpanName(),
             parentSpan,
             OTelAttributesConverter.convert(spanCreationContext.getAttributes()),
             OTelSpanKindConverter.convert(spanCreationContext.getSpanKind())
         );
-        Span newSpan = new OTelSpan(spanCreationContext.getSpanName(), otelSpan, parentSpan);
+        Span newSpan = new OTelSpan(spanCreationContext.getSpanName(), otelSpan, parentSpan, sampledTracerContextStorage);
         return newSpan;
     }
 
