@@ -11,7 +11,6 @@ package org.opensearch.telemetry.tracing;
 import org.opensearch.common.annotation.InternalApi;
 import org.opensearch.common.util.concurrent.ThreadContext;
 import org.opensearch.common.util.concurrent.ThreadContextStatePropagator;
-import org.opensearch.telemetry.TelemetryStorageService;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -45,7 +44,7 @@ public class SampledContextTracerStorage implements TracerContextStorage<String,
     public void put(String key, TraceSampleDecision traceSampleDecision) {
         TraceSampleDecision currenRef = threadContext.getTransient(key);
         if (currenRef == null) {
-            threadContext.putTransient(key, traceSampleDecision);
+            threadContext.putTransient(key, new TraceSampleDecision(traceSampleDecision.getTraceID(), traceSampleDecision.getSamplingDecision()));
         } else {
             currenRef.setTraceID(traceSampleDecision.getTraceID());
             currenRef.setSamplingDecision(traceSampleDecision.getSamplingDecision());
@@ -56,12 +55,13 @@ public class SampledContextTracerStorage implements TracerContextStorage<String,
     @SuppressWarnings("removal")
     public Map<String, Object> transients(Map<String, Object> source) {
         final Map<String, Object> transients = new HashMap<>();
-        System.out.println("Transient Thread Name: "  + Thread.currentThread().getName());
+        System.out.println("Transient Thread Name: " + Thread.currentThread().getName());
         System.out.println(source.toString());
         if (source.containsKey(SAMPLED)) {
             System.out.println("INSIDE TRANSIENT");
             transients.put(SAMPLED, source.get(SAMPLED));
         }
+        System.out.println("Transient Final: " + transients.toString());
         return transients;
     }
 

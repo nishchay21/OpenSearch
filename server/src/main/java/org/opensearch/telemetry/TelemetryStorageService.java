@@ -15,6 +15,6 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class TelemetryStorageService {
 
-    public static ConcurrentHashMap<String,Boolean> traceSampleStorage = new ConcurrentHashMap<>();
+    public static ConcurrentHashMap<String, Boolean> traceSampleStorage = new ConcurrentHashMap<>();
 
 }

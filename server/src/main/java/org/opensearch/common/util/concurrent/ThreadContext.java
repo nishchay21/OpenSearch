@@ -244,8 +244,10 @@ public final class ThreadContext implements Writeable {
     public StoredContext newStoredContext(boolean preserveResponseHeaders, Collection<String> transientHeadersToClear) {
         System.out.println("NEW stored Contect called");
         System.out.println("preserveResponseHeaders: " + preserveResponseHeaders);
-        System.out.println("transients header: " + transientHeadersToClear.toString());
+        System.out.println("newStoredContext header: " + transientHeadersToClear.toString());
+        System.out.println("newStoredContext thread: " + Thread.currentThread().getName());
         final ThreadContextStruct originalContext = threadLocal.get();
+        System.out.println("originalContext transient thread: " + originalContext.transientHeaders.toString());
         final Map<String, Object> newTransientHeaders = new HashMap<>(originalContext.transientHeaders);
 
         boolean transientHeadersModified = false;
@@ -276,7 +278,7 @@ public final class ThreadContext implements Writeable {
         }
         // this is the context when this method returns
         final ThreadContextStruct newContext = threadLocal.get();
-
+        System.out.println("New transient thread: " + newContext.transientHeaders.toString());
         return () -> {
             if (preserveResponseHeaders && threadLocal.get() != newContext) {
                 threadLocal.set(originalContext.putResponseHeaders(threadLocal.get().responseHeaders));

@@ -59,6 +59,19 @@ final class WrappedTracer implements Tracer {
         return getDelegateTracer().withSpanInScope(span);
     }
 
+    /**
+     * Creates the Span Scope for a current thread. It's mandatory to scope the span just after creation so that it will
+     * automatically manage the attach /detach to the current thread.
+     *
+     * @param span   span to be scoped
+     * @param sample sample
+     * @return ScopedSpan
+     */
+    @Override
+    public SpanScope withSpanInScope(Span span, String sample) {
+        return null;
+    }
+
     @Override
     public boolean isRecording() {
         return getDelegateTracer().isRecording();

@@ -12,7 +12,9 @@ import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.transport.TransportResponse;
 import org.opensearch.telemetry.tracing.Span;
 import org.opensearch.telemetry.tracing.SpanScope;
+import org.opensearch.telemetry.tracing.TraceSampleDecision;
 import org.opensearch.telemetry.tracing.Tracer;
+import org.opensearch.telemetry.tracing.TracerContextStorage;
 import org.opensearch.transport.TransportException;
 import org.opensearch.transport.TransportResponseHandler;
 
@@ -69,7 +71,16 @@ public class TraceableTransportResponseHandler<T extends TransportResponse> impl
     @Override
     public void handleResponse(T response) {
         System.out.println("Transport Thread: " + Thread.currentThread().getName());
-        try (SpanScope scope = tracer.withSpanInScope(span)) {
+        try (SpanScope scope = tracer.withSpanInScope(span))  {
+            if ( response.sampled() != null && response.sampled().length() > 0) {
+                System.out.println(response.sampled());
+                System.out.println(span.getTraceId());
+                String traceId = response.sampled().split("-")[0];
+                boolean decision = response.sampled().split("-")[1].equals("true");
+                if (decision && traceId.equals(span.getTraceId())) {
+                    span.endSpan(true);
+                }
+            }
             span.endSpan();
         } finally {
             delegate.handleResponse(response);

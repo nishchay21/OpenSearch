@@ -51,9 +51,6 @@ import org.opensearch.core.action.NotifyOnceListener;
 import org.opensearch.core.common.bytes.BytesReference;
 import org.opensearch.core.common.transport.TransportAddress;
 import org.opensearch.core.transport.TransportResponse;
-import org.opensearch.telemetry.TelemetryStorageService;
-import org.opensearch.telemetry.tracing.TraceSampleDecision;
-import org.opensearch.telemetry.tracing.TracerContextStorage;
 import org.opensearch.threadpool.ThreadPool;
 
 import java.io.IOException;
@@ -160,9 +157,9 @@ final class OutboundHandler {
             isHandshake,
             compress
         );
-//        System.out.println("....IN OUTBOUND HANDLER RESPONSE");
-//        System.out.println(((TraceSampleDecision)threadPool.getThreadContext().getTransient(TracerContextStorage.SAMPLED)).getTraceID());
-//        System.out.println(((TraceSampleDecision)threadPool.getThreadContext().getTransient(TracerContextStorage.SAMPLED)).getSamplingDecision());
+        // System.out.println("....IN OUTBOUND HANDLER RESPONSE");
+        // System.out.println(((TraceSampleDecision)threadPool.getThreadContext().getTransient(TracerContextStorage.SAMPLED)).getTraceID());
+        // System.out.println(((TraceSampleDecision)threadPool.getThreadContext().getTransient(TracerContextStorage.SAMPLED)).getSamplingDecision());
         ActionListener<Void> listener = ActionListener.wrap(() -> messageListener.onResponseSent(requestId, action, response));
         sendMessage(channel, message, listener);
     }

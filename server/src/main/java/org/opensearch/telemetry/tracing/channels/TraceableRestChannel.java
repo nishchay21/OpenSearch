@@ -97,7 +97,9 @@ public class TraceableRestChannel implements RestChannel {
     @Override
     public void sendResponse(RestResponse response) {
         try (SpanScope scope = tracer.withSpanInScope(span)) {
-            System.out.println("Rest " + Thread.currentThread().getName() + " traceID:" + span.getTraceId() + " SpanId: " + span.getSpanId());
+            System.out.println(
+                "Rest " + Thread.currentThread().getName() + " traceID:" + span.getTraceId() + " SpanId: " + span.getSpanId()
+            );
             span.endSpan();
         } finally {
             delegate.sendResponse(response);

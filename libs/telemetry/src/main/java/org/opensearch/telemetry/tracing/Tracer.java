@@ -54,6 +54,15 @@ public interface Tracer extends TransportTracer, Closeable {
     SpanScope withSpanInScope(Span span);
 
     /**
+     * Creates the Span Scope for a current thread. It's mandatory to scope the span just after creation so that it will
+     * automatically manage the attach /detach to the current thread.
+     * @param span span to be scoped
+     * @param sample sample
+     * @return ScopedSpan
+     */
+    SpanScope withSpanInScope(Span span, String sample);
+
+    /**
      * Tells if the traces are being recorded or not
      * @return boolean
      */

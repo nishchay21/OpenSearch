@@ -38,14 +38,14 @@ class DefaultSpanScope implements SpanScope {
         SpanScope previousSpanScope,
         TracerContextStorage<String, Span> tracerContextStorage,
         TracerContextStorage<String, TraceSampleDecision> sampledTracerContextStorage
-//        TraceSampleDecision previousDecision
+        // TraceSampleDecision previousDecision
     ) {
         this.span = Objects.requireNonNull(span);
         this.beforeSpan = beforeSpan;
         this.previousSpanScope = previousSpanScope;
         this.tracerContextStorage = tracerContextStorage;
         this.sampledTracerContextStorage = sampledTracerContextStorage;
-//        this.previousDecision = previousDecision;
+        // this.previousDecision = previousDecision;
     }
 
     /**
@@ -54,12 +54,17 @@ class DefaultSpanScope implements SpanScope {
      * @param tracerContextStorage tracer context storage.
      * @return SpanScope spanScope
      */
-    public static SpanScope create(Span span, TracerContextStorage<String, Span> tracerContextStorage, TracerContextStorage<String, TraceSampleDecision> sampledTracerContextStorage) {
+    public static SpanScope create(
+        Span span,
+        TracerContextStorage<String, Span> tracerContextStorage,
+        TracerContextStorage<String, TraceSampleDecision> sampledTracerContextStorage
+    ) {
         final SpanScope beforeSpanScope = spanScopeThreadLocal.get();
         final Span beforeSpan = tracerContextStorage.get(TracerContextStorage.CURRENT_SPAN);
-//        final TraceSampleDecision previousDecision = sampledTracerContextStorage.get(TracerContextStorage.SAMPLED);
+        // final TraceSampleDecision previousDecision = sampledTracerContextStorage.get(TracerContextStorage.SAMPLED);
         return new DefaultSpanScope(span, beforeSpan, beforeSpanScope, tracerContextStorage, sampledTracerContextStorage);
-//        return new DefaultSpanScope(span, beforeSpan, beforeSpanScope, tracerContextStorage, sampledTracerContextStorage, previousDecision);
+        // return new DefaultSpanScope(span, beforeSpan, beforeSpanScope, tracerContextStorage, sampledTracerContextStorage,
+        // previousDecision);
     }
 
     @Override
@@ -74,14 +79,14 @@ class DefaultSpanScope implements SpanScope {
         if (previousDecision == null || !this.span.getTraceId().equals(previousDecision.getTraceID())) {
             previousDecision = new TraceSampleDecision(this.span.getTraceId(), false);
         }
-//        sampledTracerContextStorage.put(TracerContextStorage.SAMPLED, previousDecision);
+        // sampledTracerContextStorage.put(TracerContextStorage.SAMPLED, previousDecision);
         return this;
     }
 
     private void detach() {
         spanScopeThreadLocal.set(previousSpanScope);
         tracerContextStorage.put(TracerContextStorage.CURRENT_SPAN, beforeSpan);
-//        sampledTracerContextStorage.put(TracerContextStorage.SAMPLED, previousDecision);
+        // sampledTracerContextStorage.put(TracerContextStorage.SAMPLED, previousDecision);
     }
 
     @Override

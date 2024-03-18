@@ -41,7 +41,11 @@ class DefaultTracer implements Tracer {
      * @param tracerContextStorage storage used for storing current span context
      * @param sampledTracerContextStorage storage used
      */
-    public DefaultTracer(TracingTelemetry tracingTelemetry, TracerContextStorage<String, Span> tracerContextStorage, TracerContextStorage<String, TraceSampleDecision> sampledTracerContextStorage) {
+    public DefaultTracer(
+        TracingTelemetry tracingTelemetry,
+        TracerContextStorage<String, Span> tracerContextStorage,
+        TracerContextStorage<String, TraceSampleDecision> sampledTracerContextStorage
+    ) {
         this.tracingTelemetry = tracingTelemetry;
         this.tracerContextStorage = tracerContextStorage;
         this.sampledTracerContextStorage = sampledTracerContextStorage;
@@ -84,6 +88,36 @@ class DefaultTracer implements Tracer {
 
     @Override
     public SpanScope withSpanInScope(Span span) {
+        return DefaultSpanScope.create(span, tracerContextStorage, sampledTracerContextStorage).attach();
+    }
+
+    /**
+     * Creates the Span Scope for a current thread. It's mandatory to scope the span just after creation so that it will
+     * automatically manage the attach /detach to the current thread.
+     *
+     * @param span   span to be scoped
+     * @param sampleInformation sample
+     * @return ScopedSpan
+     */
+    @Override
+    public SpanScope withSpanInScope(Span span, String sampleInformation) {
+        System.out.println("Span scope:" + sampleInformation);
+        System.out.println("Span trace:" + span.getTraceId());
+        if (sampleInformation.length() > 0) {
+                String traceId = sampleInformation.split("-")[0];
+                boolean decision = sampleInformation.split("-")[1].equals("true");
+                if (decision && traceId.equals(span.getTraceId())) {
+                    System.out.println("Inside Span Scope");
+                    TraceSampleDecision sampleDecision = sampledTracerContextStorage.get(TracerContextStorage.SAMPLED);
+                    if (sampleDecision == null) {
+                        sampleDecision = new TraceSampleDecision(traceId, true);
+                        sampledTracerContextStorage.put(TracerContextStorage.SAMPLED, sampleDecision);
+                    } else {
+                        sampleDecision.setTraceID(traceId);
+                        sampleDecision.setSamplingDecision(true);
+                    }
+                }
+            }
         return DefaultSpanScope.create(span, tracerContextStorage, sampledTracerContextStorage).attach();
     }
 

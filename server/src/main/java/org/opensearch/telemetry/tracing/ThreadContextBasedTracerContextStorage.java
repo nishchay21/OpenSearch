@@ -11,7 +11,6 @@ package org.opensearch.telemetry.tracing;
 import org.opensearch.common.annotation.InternalApi;
 import org.opensearch.common.util.concurrent.ThreadContext;
 import org.opensearch.common.util.concurrent.ThreadContextStatePropagator;
-import org.opensearch.telemetry.TelemetryStorageService;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -90,8 +89,8 @@ public class ThreadContextBasedTracerContextStorage implements TracerContextStor
                     if (traceParent.length > 2) {
                         String traceID = traceParent[1];
                         if (current.getSpan().getTraceId().equals(traceID) && current.getSpan().getAttributes().containsKey(SAMPLED)) {
-                                headers.put(SAMPLED, traceID + '-' + true);
-//                                TelemetryStorageService.traceSampleStorage.remove(traceID);
+                            headers.put(SAMPLED, traceID + '-' + true);
+                            // TelemetryStorageService.traceSampleStorage.remove(traceID);
                         }
                     }
                 }

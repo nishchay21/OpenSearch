@@ -13,7 +13,9 @@ import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.transport.TransportResponse;
 import org.opensearch.telemetry.tracing.Span;
 import org.opensearch.telemetry.tracing.SpanScope;
+import org.opensearch.telemetry.tracing.TraceSampleDecision;
 import org.opensearch.telemetry.tracing.Tracer;
+import org.opensearch.telemetry.tracing.TracerContextStorage;
 import org.opensearch.transport.BaseTcpTransportChannel;
 import org.opensearch.transport.TcpTransportChannel;
 import org.opensearch.transport.TransportChannel;
@@ -85,9 +87,7 @@ public class TraceableTcpTransportChannel extends BaseTcpTransportChannel {
 
     @Override
     public void sendResponse(TransportResponse response) throws IOException {
-        try (SpanScope scope = tracer.withSpanInScope(span)) {
-            System.out.println(".... Traceable TCP transport......");
-            System.out.println(span.getSpanName() + " " + span.getSpanId() + " " + span.getAttributes().toString() + " " + span.getTraceId());
+        try (SpanScope scope = tracer.withSpanInScope(span, response.sampled())) {
             span.endSpan();
         } finally {
             try {

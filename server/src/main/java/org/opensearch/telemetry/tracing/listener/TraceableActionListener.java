@@ -56,7 +56,9 @@ public class TraceableActionListener<Response> implements ActionListener<Respons
     @Override
     public void onResponse(Response response) {
         try (SpanScope scope = tracer.withSpanInScope(span)) {
-            System.out.println("HttpActionListener " + Thread.currentThread().getName() + " traceID:" + span.getTraceId() + " SpanId: " + span.getSpanId());
+            System.out.println(
+                "HttpActionListener " + Thread.currentThread().getName() + " traceID:" + span.getTraceId() + " SpanId: " + span.getSpanId()
+            );
             span.endSpan();
         } finally {
             delegate.onResponse(response);

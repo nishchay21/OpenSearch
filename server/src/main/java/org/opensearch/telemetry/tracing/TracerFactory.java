@@ -14,7 +14,6 @@ import org.opensearch.common.annotation.InternalApi;
 import org.opensearch.common.util.concurrent.ThreadContext;
 import org.opensearch.telemetry.Telemetry;
 import org.opensearch.telemetry.TelemetrySettings;
-import org.opensearch.telemetry.TelemetryStorageService;
 import org.opensearch.telemetry.tracing.noop.NoopTracer;
 
 import java.io.Closeable;
@@ -86,7 +85,10 @@ public class TracerFactory implements Closeable {
 
     private Tracer createDefaultTracer(TracingTelemetry tracingTelemetry, ThreadContext threadContext) {
         TracerContextStorage<String, Span> tracerContextStorage = createTracerContextStorage(tracingTelemetry, threadContext);
-        TracerContextStorage<String, TraceSampleDecision> sampledTracerContextStorage = createSampledTracerContextStorage(tracingTelemetry, threadContext);
+        TracerContextStorage<String, TraceSampleDecision> sampledTracerContextStorage = createSampledTracerContextStorage(
+            tracingTelemetry,
+            threadContext
+        );
 
         return new DefaultTracer(tracingTelemetry, tracerContextStorage, sampledTracerContextStorage);
     }
