@@ -105,4 +105,9 @@ public class NoopSpan implements Span {
     public Map<String, Object> getAttributes() {
         return null;
     }
+
+    @Override
+    public long getStartEpochMillis() {
+        return 0;
+    }
 }

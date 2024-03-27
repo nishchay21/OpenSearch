@@ -107,4 +107,6 @@ public interface Span {
      * @return returns the attributes map.
      */
     Map<String, Object> getAttributes();
+
+    long getStartEpochMillis();
 }

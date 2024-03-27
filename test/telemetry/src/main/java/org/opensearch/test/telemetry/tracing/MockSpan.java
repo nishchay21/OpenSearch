@@ -18,6 +18,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 /**
@@ -32,6 +33,8 @@ public class MockSpan extends AbstractSpan {
     private final Long startTime;
     private Long endTime;
     private final SpanKind spanKind;
+    // The start time of the span.
+    private final long startEpochNanos;
 
     private final Object lock = new Object();
 
@@ -86,6 +89,7 @@ public class MockSpan extends AbstractSpan {
             this.metadata.putAll(attributes.getAttributesMap());
         }
         this.spanKind = spanKind;
+        startEpochNanos = System.currentTimeMillis();
     }
 
     @Override
@@ -203,5 +207,10 @@ public class MockSpan extends AbstractSpan {
     @Override
     public Map<String, Object> getAttributes() {
         return metadata;
+    }
+
+    @Override
+    public long getStartEpochMillis() {
+        return this.startEpochNanos;
     }
 }

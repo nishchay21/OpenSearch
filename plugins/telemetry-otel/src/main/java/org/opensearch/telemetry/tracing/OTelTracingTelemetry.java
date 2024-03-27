@@ -19,6 +19,7 @@ import io.opentelemetry.api.baggage.Baggage;
 import io.opentelemetry.api.trace.TracerProvider;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.sdk.OpenTelemetrySdk;
+import org.opensearch.telemetry.tracing.evaluateSpan.SpanEvaluation;
 
 /**
  * OTel based Telemetry provider
@@ -27,17 +28,19 @@ public class OTelTracingTelemetry<T extends TracerProvider & Closeable> implemen
     private final RefCountedReleasable<OpenTelemetrySdk> refCountedOpenTelemetry;
     private final T tracerProvider;
     private final io.opentelemetry.api.trace.Tracer otelTracer;
+    private final SpanEvaluation spanEvaluation;
 
     /**
      * Creates OTel based {@link TracingTelemetry}
      * @param refCountedOpenTelemetry OpenTelemetry instance
      * @param tracerProvider {@link TracerProvider} instance.
      */
-    public OTelTracingTelemetry(RefCountedReleasable<OpenTelemetrySdk> refCountedOpenTelemetry, T tracerProvider) {
+    public OTelTracingTelemetry(RefCountedReleasable<OpenTelemetrySdk> refCountedOpenTelemetry, T tracerProvider, SpanEvaluation spanEvaluation) {
         this.refCountedOpenTelemetry = refCountedOpenTelemetry;
         this.refCountedOpenTelemetry.incRef();
         this.tracerProvider = tracerProvider;
         this.otelTracer = tracerProvider.get(OTelTelemetryPlugin.INSTRUMENTATION_SCOPE_NAME);
+        this.spanEvaluation = spanEvaluation;
     }
 
     @Override

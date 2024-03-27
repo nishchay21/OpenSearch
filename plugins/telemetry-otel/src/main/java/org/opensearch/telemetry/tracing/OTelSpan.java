@@ -24,6 +24,9 @@ class OTelSpan extends AbstractSpan {
 
     private final Map<String, Object> metadata;
 
+    // The start time of the span.
+    private final long startEpochMillis;
+
     /**
      * Constructor
      * @param spanName span name
@@ -34,6 +37,7 @@ class OTelSpan extends AbstractSpan {
         super(spanName, parentSpan);
         this.delegateSpan = span;
         this.metadata = new HashMap<>();
+        startEpochMillis = System.currentTimeMillis();
     }
 
     @Override
@@ -110,5 +114,10 @@ class OTelSpan extends AbstractSpan {
 
     io.opentelemetry.api.trace.Span getDelegateSpan() {
         return delegateSpan;
+    }
+
+    @Override
+    public long getStartEpochMillis() {
+        return startEpochMillis;
     }
 }

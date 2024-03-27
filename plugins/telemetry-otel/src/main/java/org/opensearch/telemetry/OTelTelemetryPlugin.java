@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.Optional;
 
 import io.opentelemetry.sdk.OpenTelemetrySdk;
+import org.opensearch.telemetry.tracing.evaluateSpan.SpanEvaluation;
 
 /**
  * Telemetry plugin based on Otel
@@ -79,7 +80,8 @@ public class OTelTelemetryPlugin extends Plugin implements TelemetryPlugin {
     }
 
     private Telemetry telemetry(TelemetrySettings telemetrySettings) {
-        return new OTelTelemetry(refCountedOpenTelemetry);
+        SpanEvaluation spanEvaluation = new SpanEvaluation(telemetrySettings);
+        return new OTelTelemetry(refCountedOpenTelemetry, spanEvaluation);
     }
 
     @Override

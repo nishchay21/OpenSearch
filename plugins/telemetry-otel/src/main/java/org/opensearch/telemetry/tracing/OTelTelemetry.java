@@ -14,6 +14,7 @@ import org.opensearch.telemetry.metrics.MetricsTelemetry;
 import org.opensearch.telemetry.metrics.OTelMetricsTelemetry;
 
 import io.opentelemetry.sdk.OpenTelemetrySdk;
+import org.opensearch.telemetry.tracing.evaluateSpan.SpanEvaluation;
 
 /**
  * Otel implementation of Telemetry
@@ -21,6 +22,7 @@ import io.opentelemetry.sdk.OpenTelemetrySdk;
 public class OTelTelemetry implements Telemetry {
 
     private final RefCountedReleasable<OpenTelemetrySdk> refCountedOpenTelemetry;
+    private final SpanEvaluation spanEvaluation;
 
     /**
      * Creates Telemetry instance
@@ -30,13 +32,14 @@ public class OTelTelemetry implements Telemetry {
      * Creates Telemetry instance
      * @param refCountedOpenTelemetry open telemetry.
      */
-    public OTelTelemetry(RefCountedReleasable<OpenTelemetrySdk> refCountedOpenTelemetry) {
+    public OTelTelemetry(RefCountedReleasable<OpenTelemetrySdk> refCountedOpenTelemetry, SpanEvaluation spanEvaluation) {
         this.refCountedOpenTelemetry = refCountedOpenTelemetry;
+        this.spanEvaluation = spanEvaluation;
     }
 
     @Override
     public TracingTelemetry getTracingTelemetry() {
-        return new OTelTracingTelemetry<>(refCountedOpenTelemetry, refCountedOpenTelemetry.get().getSdkTracerProvider());
+        return new OTelTracingTelemetry<>(refCountedOpenTelemetry, refCountedOpenTelemetry.get().getSdkTracerProvider(), spanEvaluation);
     }
 
     @Override
