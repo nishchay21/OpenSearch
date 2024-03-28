@@ -12,9 +12,9 @@ import org.opensearch.common.concurrent.RefCountedReleasable;
 import org.opensearch.telemetry.Telemetry;
 import org.opensearch.telemetry.metrics.MetricsTelemetry;
 import org.opensearch.telemetry.metrics.OTelMetricsTelemetry;
+import org.opensearch.telemetry.tracing.evaluateSpan.SpanEvaluation;
 
 import io.opentelemetry.sdk.OpenTelemetrySdk;
-import org.opensearch.telemetry.tracing.evaluateSpan.SpanEvaluation;
 
 /**
  * Otel implementation of Telemetry

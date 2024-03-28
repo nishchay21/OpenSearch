@@ -28,8 +28,9 @@ public class LatencyEvaluation implements Evaluation {
      * @param span span that needs to be evaluated
      */
     @Override
-    public void evaluate(Span span) {
+    public EvaluationResult evaluate(Span span) {
         long SpanLatency = getSpanLatency(span.getStartEpochMillis());
+        return EvaluationResult.EVALUATED_FALSE;
     }
 
     private long getSpanLatency(long startEpochNanos) {

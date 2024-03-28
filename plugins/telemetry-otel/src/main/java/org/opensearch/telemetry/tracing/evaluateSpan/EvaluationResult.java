@@ -8,18 +8,18 @@
 
 package org.opensearch.telemetry.tracing.evaluateSpan;
 
-import org.opensearch.telemetry.tracing.Span;
-
 /**
- * Interface for evaluation framework*
+ * Enum for Evaluation result*
  */
-public interface Evaluation {
+public enum EvaluationResult {
 
     /**
-     * Method where evaluation logic resides*
-     * @param span span that needs to be evaluated
-     * @return EvaluationResult
+     * Result returned if evaluated true*
      */
-    EvaluationResult evaluate(Span span);
+    EVALUATED_TRUE,
 
+    /**
+     * Result returned if evaluated false*
+     */
+    EVALUATED_FALSE
 }

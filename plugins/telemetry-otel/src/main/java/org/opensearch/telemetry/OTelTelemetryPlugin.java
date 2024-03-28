@@ -15,13 +15,15 @@ import org.opensearch.plugins.Plugin;
 import org.opensearch.plugins.TelemetryPlugin;
 import org.opensearch.telemetry.tracing.OTelResourceProvider;
 import org.opensearch.telemetry.tracing.OTelTelemetry;
+import org.opensearch.telemetry.tracing.evaluateSpan.LatencyEvaluation;
+import org.opensearch.telemetry.tracing.evaluateSpan.SpanEvaluation;
+import org.opensearch.telemetry.tracing.evaluateSpan.SpanEvaluationBuilder;
 
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 
 import io.opentelemetry.sdk.OpenTelemetrySdk;
-import org.opensearch.telemetry.tracing.evaluateSpan.SpanEvaluation;
 
 /**
  * Telemetry plugin based on Otel
@@ -80,7 +82,9 @@ public class OTelTelemetryPlugin extends Plugin implements TelemetryPlugin {
     }
 
     private Telemetry telemetry(TelemetrySettings telemetrySettings) {
-        SpanEvaluation spanEvaluation = new SpanEvaluation(telemetrySettings);
+        SpanEvaluation spanEvaluation = new SpanEvaluationBuilder().withSettings(telemetrySettings)
+            .registerEvaluation(new LatencyEvaluation(telemetrySettings))
+            .build();
         return new OTelTelemetry(refCountedOpenTelemetry, spanEvaluation);
     }
 

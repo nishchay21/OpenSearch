@@ -23,39 +23,28 @@ public class SpanEvaluation {
     private final TelemetrySettings telemetrySettings;
 
     /**
-     * Constructor for class*
+     * *
+     * @param telemetrySettings telemetry settings
+     * @param evaluationList list of evaluators required on span
      */
-    public SpanEvaluation(TelemetrySettings telemetrySettings) {
-        evaluationList = new LinkedList<>();
+    public SpanEvaluation(TelemetrySettings telemetrySettings, List<Evaluation> evaluationList) {
         this.telemetrySettings = telemetrySettings;
-        /*
-         As of now we will have this setting as static. In later use cases we can see if we need
-         this dynamic.
-         */
-        initializeEvaluators();
-    }
-
-    private void initializeEvaluators() {
-        // registering latency evaluation
-        LatencyEvaluation latencyEvaluation = new LatencyEvaluation(telemetrySettings);
-        registerEvaluation(latencyEvaluation);
+        this.evaluationList = new LinkedList<>();
     }
 
     /**
+
      * The main method that calls evaluation of all registered evaluation*
      * @param span span that needs to be evaluated
+     * @return EvaluationResult
      */
-    public void performEvaluation(Span span) {
+    public EvaluationResult performEvaluation(Span span) {
         for (Evaluation evaluation : evaluationList) {
-            evaluation.evaluate(span);
+            EvaluationResult result = evaluation.evaluate(span);
+            if (result.equals(EvaluationResult.EVALUATED_TRUE)) {
+                return result;
+            }
         }
-    }
-
-    /**
-     * Method used for registering an evaluation to the framework*
-     * @param evaluation evaluation that needs to be registered
-     */
-    public void registerEvaluation(Evaluation evaluation) {
-        evaluationList.add(evaluation);
+        return EvaluationResult.EVALUATED_FALSE;
     }
 }

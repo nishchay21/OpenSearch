@@ -11,6 +11,7 @@ package org.opensearch.telemetry.tracing;
 import org.opensearch.common.concurrent.RefCountedReleasable;
 import org.opensearch.telemetry.OTelAttributesConverter;
 import org.opensearch.telemetry.OTelTelemetryPlugin;
+import org.opensearch.telemetry.tracing.evaluateSpan.SpanEvaluation;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -18,7 +19,6 @@ import java.io.IOException;
 import io.opentelemetry.api.trace.TracerProvider;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.sdk.OpenTelemetrySdk;
-import org.opensearch.telemetry.tracing.evaluateSpan.SpanEvaluation;
 
 /**
  * OTel based Telemetry provider
@@ -34,7 +34,11 @@ public class OTelTracingTelemetry<T extends TracerProvider & Closeable> implemen
      * @param refCountedOpenTelemetry OpenTelemetry instance
      * @param tracerProvider {@link TracerProvider} instance.
      */
-    public OTelTracingTelemetry(RefCountedReleasable<OpenTelemetrySdk> refCountedOpenTelemetry, T tracerProvider, SpanEvaluation spanEvaluation) {
+    public OTelTracingTelemetry(
+        RefCountedReleasable<OpenTelemetrySdk> refCountedOpenTelemetry,
+        T tracerProvider,
+        SpanEvaluation spanEvaluation
+    ) {
         this.refCountedOpenTelemetry = refCountedOpenTelemetry;
         this.refCountedOpenTelemetry.incRef();
         this.tracerProvider = tracerProvider;
