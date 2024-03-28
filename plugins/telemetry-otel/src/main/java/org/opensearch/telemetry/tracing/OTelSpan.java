@@ -8,11 +8,10 @@
 
 package org.opensearch.telemetry.tracing;
 
-import java.util.HashMap;
-import java.util.Map;
-
+import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.StatusCode;
+import io.opentelemetry.sdk.trace.ReadableSpan;
 
 /**
  * Default implementation of {@link Span} using Otel span. It keeps a reference of OpenTelemetry Span and handles span
@@ -21,8 +20,6 @@ import io.opentelemetry.api.trace.StatusCode;
 class OTelSpan extends AbstractSpan {
 
     private final Span delegateSpan;
-
-    private final Map<String, Object> metadata;
 
     // The start time of the span.
     private final long startEpochMillis;
@@ -36,13 +33,12 @@ class OTelSpan extends AbstractSpan {
     public OTelSpan(String spanName, Span span, org.opensearch.telemetry.tracing.Span parentSpan) {
         super(spanName, parentSpan);
         this.delegateSpan = span;
-        this.metadata = new HashMap<>();
         startEpochMillis = System.currentTimeMillis();
     }
 
     @Override
     public void endSpan() {
-        if (getAttributes().containsKey(TracerContextStorage.SAMPLED)) {
+        if (getAttributeBoolean(TracerContextStorage.SAMPLED) != null && getAttributeBoolean(TracerContextStorage.SAMPLED)) {
             markParentForSampling();
         }
         delegateSpan.end();
@@ -50,7 +46,7 @@ class OTelSpan extends AbstractSpan {
 
     private void markParentForSampling() {
         org.opensearch.telemetry.tracing.Span current_parent = getParentSpan();
-        while (current_parent != null && !current_parent.getAttributes().containsKey(TracerContextStorage.SAMPLED)) {
+        while (current_parent != null && current_parent.getAttributeBoolean(TracerContextStorage.SAMPLED) == null) {
             current_parent.addAttribute(TracerContextStorage.SAMPLED, true);
             current_parent = current_parent.getParentSpan();
         }
@@ -59,25 +55,21 @@ class OTelSpan extends AbstractSpan {
     @Override
     public void addAttribute(String key, String value) {
         delegateSpan.setAttribute(key, value);
-        metadata.put(key, value);
     }
 
     @Override
     public void addAttribute(String key, Long value) {
         delegateSpan.setAttribute(key, value);
-        metadata.put(key, value);
     }
 
     @Override
     public void addAttribute(String key, Double value) {
         delegateSpan.setAttribute(key, value);
-        metadata.put(key, value);
     }
 
     @Override
     public void addAttribute(String key, Boolean value) {
         delegateSpan.setAttribute(key, value);
-        metadata.put(key, value);
     }
 
     @Override
@@ -103,13 +95,39 @@ class OTelSpan extends AbstractSpan {
     }
 
     @Override
-    public Object getAttribute(String key) {
-        return metadata.get(key);
+    public String getAttributeString(String key) {
+        if (delegateSpan != null && delegateSpan instanceof ReadableSpan) return ((ReadableSpan) delegateSpan).getAttribute(
+            AttributeKey.stringKey(key)
+        );
+
+        return null;
     }
 
     @Override
-    public Map<String, Object> getAttributes() {
-        return metadata;
+    public Boolean getAttributeBoolean(String key) {
+        if (delegateSpan != null && delegateSpan instanceof ReadableSpan) {
+            return ((ReadableSpan) delegateSpan).getAttribute(AttributeKey.booleanKey(key));
+        }
+
+        return null;
+    }
+
+    @Override
+    public Long getAttributeLong(String key) {
+        if (delegateSpan != null && delegateSpan instanceof ReadableSpan) return ((ReadableSpan) delegateSpan).getAttribute(
+            AttributeKey.longKey(key)
+        );
+
+        return null;
+    }
+
+    @Override
+    public Double getAttributeDouble(String key) {
+        if (delegateSpan != null && delegateSpan instanceof ReadableSpan) return ((ReadableSpan) delegateSpan).getAttribute(
+            AttributeKey.doubleKey(key)
+        );
+
+        return null;
     }
 
     io.opentelemetry.api.trace.Span getDelegateSpan() {

@@ -18,7 +18,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 /**
@@ -143,6 +142,26 @@ public class MockSpan extends AbstractSpan {
         return spanId;
     }
 
+    @Override
+    public String getAttributeString(String key) {
+        return "";
+    }
+
+    @Override
+    public Boolean getAttributeBoolean(String key) {
+        return false;
+    }
+
+    @Override
+    public Long getAttributeLong(String key) {
+        return 0L;
+    }
+
+    @Override
+    public Double getAttributeDouble(String key) {
+        return 0.0;
+    }
+
     /**
      * Returns whether the span is ended or not.
      * @return span end status.
@@ -195,7 +214,6 @@ public class MockSpan extends AbstractSpan {
      * @param key key
      * @return value
      */
-    @Override
     public Object getAttribute(String key) {
         return metadata.get(key);
     }
@@ -204,7 +222,6 @@ public class MockSpan extends AbstractSpan {
      * Returns the attributes as map.
      * @return returns the attributes map.
      */
-    @Override
     public Map<String, Object> getAttributes() {
         return metadata;
     }
