@@ -69,9 +69,7 @@ public class OTelTracingTelemetry<T extends TracerProvider & Closeable> implemen
             OTelAttributesConverter.convert(spanCreationContext.getAttributes()),
             OTelSpanKindConverter.convert(spanCreationContext.getSpanKind())
         );
-
         Span newSpan = new OTelSpan(spanCreationContext.getSpanName(), otelSpan, parentSpan);
-
         return newSpan;
     }
 

@@ -50,7 +50,7 @@ import org.opensearch.telemetry.tracing.Span;
 import org.opensearch.telemetry.tracing.SpanBuilder;
 import org.opensearch.telemetry.tracing.SpanScope;
 import org.opensearch.telemetry.tracing.Tracer;
-import org.opensearch.telemetry.tracing.TracerContextStorage;
+import org.opensearch.telemetry.tracing.attributes.SamplingAttributes;
 import org.opensearch.telemetry.tracing.channels.TraceableTcpTransportChannel;
 import org.opensearch.threadpool.ThreadPool;
 
@@ -142,7 +142,7 @@ public class InboundHandler {
             // Place the context with the headers from the message
             threadContext.setHeaders(header.getHeaders());
             threadContext.putTransient("_remote_address", remoteAddress);
-            String sampleInformation = message.getHeader().getHeaders().v1().getOrDefault(TracerContextStorage.SAMPLED, "");
+            String sampleInformation = message.getHeader().getHeaders().v1().getOrDefault(SamplingAttributes.SAMPLED.toString(), "");
             if (sampleInformation.equals("true")) {
                 responseSampled = true;
             }
@@ -405,7 +405,7 @@ public class InboundHandler {
             response = handler.read(stream);
             response.remoteAddress(new TransportAddress(remoteAddress));
             if (responseSampled) {
-                response.markResponseAsSampled();
+                response.markResponseInferredSampled();
             }
             checkStreamIsFullyConsumed(requestId, handler, stream, false);
         } catch (Exception e) {

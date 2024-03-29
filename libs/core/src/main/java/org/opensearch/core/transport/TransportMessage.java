@@ -51,7 +51,10 @@ public abstract class TransportMessage implements Writeable {
         this.remoteAddress = remoteAddress;
     }
 
-    public void markResponseAsSampled() {
+    /*
+     * This is used by the Otel Framework
+     */
+    public void markResponseInferredSampled() {
         this.sampled = true;
     }
 
@@ -59,7 +62,7 @@ public abstract class TransportMessage implements Writeable {
         return remoteAddress;
     }
 
-    public boolean sampled() {
+    public boolean isResponseInferredSampled() {
         return sampled;
     }
 
