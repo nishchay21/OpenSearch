@@ -112,18 +112,18 @@ class DefaultTracer implements Tracer {
     }
 
     private void addRequestAttributeToContext(SpanCreationContext spanCreationContext, Map<String, Collection<String>> headers) {
-        if (headers != null && headers.containsKey(SamplingAttributes.SAMPLER.toString())) {
+        if (headers != null && headers.containsKey(SamplingAttributes.SAMPLER.getValue())) {
             spanCreationContext.getAttributes()
-                .addAttribute(SamplingAttributes.SAMPLER.toString(), SamplingAttributes.INFERRED_SAMPLER.toString());
+                .addAttribute(SamplingAttributes.SAMPLER.getValue(), SamplingAttributes.INFERRED_SAMPLER.getValue());
         }
     }
 
     private void copyInheritableParentAttributes(Span parentSpan, Span currentSpan) {
         // This work as common attribute propagator from parent to child
         if (parentSpan != null) {
-            Optional<String> inferredAttribute = Optional.ofNullable(parentSpan.getAttributeString(SamplingAttributes.SAMPLER.toString()));
+            Optional<String> inferredAttribute = Optional.ofNullable(parentSpan.getAttributeString(SamplingAttributes.SAMPLER.getValue()));
             if (inferredAttribute.isPresent()) {
-                currentSpan.addAttribute(SamplingAttributes.SAMPLER.toString(), SamplingAttributes.INFERRED_SAMPLER.toString());
+                currentSpan.addAttribute(SamplingAttributes.SAMPLER.getValue(), SamplingAttributes.INFERRED_SAMPLER.getValue());
             }
         }
     }

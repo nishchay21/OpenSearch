@@ -89,14 +89,14 @@ public class ThreadContextBasedTracerContextStorage implements TracerContextStor
                     current.getSpan().getAttributeBoolean(SamplingAttributes.SAMPLED.toString())
                 );
                 if (isSpanSampled.isPresent()) {
-                    headers.put(SamplingAttributes.SAMPLED.toString(), "true");
+                    headers.put(SamplingAttributes.SAMPLED.getValue(), "true");
                 }
                 Optional<String> isSpanInferredSampled = Optional.ofNullable(
-                    current.getSpan().getAttributeString(SamplingAttributes.SAMPLER.toString())
+                    current.getSpan().getAttributeString(SamplingAttributes.SAMPLER.getValue())
                 );
                 if (isSpanInferredSampled.isPresent()
-                    && isSpanInferredSampled.get().equals(SamplingAttributes.INFERRED_SAMPLER.toString())) {
-                    headers.put(SamplingAttributes.SAMPLER.toString(), isSpanInferredSampled.get());
+                    && isSpanInferredSampled.get().equals(SamplingAttributes.INFERRED_SAMPLER.getValue())) {
+                    headers.put(SamplingAttributes.SAMPLER.getValue(), isSpanInferredSampled.get());
                 }
             }
         }

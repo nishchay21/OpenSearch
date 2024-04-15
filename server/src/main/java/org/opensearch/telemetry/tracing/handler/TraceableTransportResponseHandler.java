@@ -70,8 +70,9 @@ public class TraceableTransportResponseHandler<T extends TransportResponse> impl
     @Override
     public void handleResponse(T response) {
         try (SpanScope scope = tracer.withSpanInScope(span)) {
-            if (response.isResponseInferredSampled()) {
-                span.addAttribute(SamplingAttributes.SAMPLED.toString(), true);
+            String sampleInformation = response.getResponseHeaders().getOrDefault(SamplingAttributes.SAMPLED.getValue(), "");
+            if (sampleInformation.equals("true")) {
+                span.addAttribute(SamplingAttributes.SAMPLED.getValue(), true);
             }
             span.endSpan();
         } finally {

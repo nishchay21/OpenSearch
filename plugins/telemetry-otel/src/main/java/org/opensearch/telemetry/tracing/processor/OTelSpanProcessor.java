@@ -23,7 +23,7 @@ import io.opentelemetry.sdk.trace.SpanProcessor;
 /**
  * Implementation of the SpanProcessor and delegates to the configured processor.
  */
-public class OtelSpanProcessor implements SpanProcessor {
+public class OTelSpanProcessor implements SpanProcessor {
 
     private final SpanProcessor delegateProcessor;
 
@@ -31,7 +31,7 @@ public class OtelSpanProcessor implements SpanProcessor {
      * *
      * @param delegateProcessor the span processor to which this processor will delegate
      */
-    public OtelSpanProcessor(SpanProcessor delegateProcessor) {
+    public OTelSpanProcessor(SpanProcessor delegateProcessor) {
         this.delegateProcessor = delegateProcessor;
     }
 
@@ -74,10 +74,10 @@ public class OtelSpanProcessor implements SpanProcessor {
         if (span != null
             && span.getSpanContext().isSampled()
             && Objects.equals(
-                span.getAttribute(AttributeKey.stringKey(SamplingAttributes.SAMPLER.toString())),
-                SamplingAttributes.INFERRED_SAMPLER.toString()
+                span.getAttribute(AttributeKey.stringKey(SamplingAttributes.SAMPLER.getValue())),
+                SamplingAttributes.INFERRED_SAMPLER.getValue()
             )) {
-            if (span.getAttribute(AttributeKey.booleanKey(SamplingAttributes.SAMPLED.toString())) != null) {
+            if (span.getAttribute(AttributeKey.booleanKey(SamplingAttributes.SAMPLED.getValue())) != null) {
                 this.delegateProcessor.onEnd(span);
             }
         } else {

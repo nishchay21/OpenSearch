@@ -34,8 +34,11 @@ public enum SamplingAttributes {
      */
     SAMPLER;
 
-    @Override
-    public String toString() {
-        return name().toLowerCase(Locale.getDefault());
+    /**
+     * returns lower case enum value*
+     * @return String
+     */
+    public String getValue() {
+        return name().toLowerCase(Locale.ROOT);
     }
 }

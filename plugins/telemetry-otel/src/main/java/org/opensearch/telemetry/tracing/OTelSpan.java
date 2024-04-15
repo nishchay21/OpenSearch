@@ -10,6 +10,11 @@ package org.opensearch.telemetry.tracing;
 
 import org.opensearch.telemetry.tracing.attributes.SamplingAttributes;
 
+<<<<<<< HEAD
+=======
+import java.util.Optional;
+
+>>>>>>> sampling
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.StatusCode;
@@ -40,8 +45,7 @@ class OTelSpan extends AbstractSpan {
 
     @Override
     public void endSpan() {
-        if (getAttributeBoolean(SamplingAttributes.SAMPLED.toString()) == null && isSpanOutlier()) {
-            addAttribute(SamplingAttributes.SAMPLED.toString(), true);
+        if (isSpanOutlier()) {
             markParentForSampling();
         }
         delegateSpan.end();
@@ -52,13 +56,18 @@ class OTelSpan extends AbstractSpan {
      * This Framework will be used to evaluate a span if that is an outlier or not.
      */
     private boolean isSpanOutlier() {
-        return false;
+        Optional<Boolean> isSpanSampled = Optional.ofNullable(getAttributeBoolean(SamplingAttributes.SAMPLED.getValue()));
+        Optional<String> isSpanInferredSampled = Optional.ofNullable(getAttributeString(SamplingAttributes.SAMPLER.getValue()));
+
+        return isSpanSampled.isPresent()
+            && isSpanInferredSampled.isPresent()
+            && isSpanInferredSampled.get().equals(SamplingAttributes.INFERRED_SAMPLER.getValue());
     }
 
     private void markParentForSampling() {
         org.opensearch.telemetry.tracing.Span currentParent = getParentSpan();
-        while (currentParent != null && currentParent.getAttributeBoolean(SamplingAttributes.SAMPLED.toString()) == null) {
-            currentParent.addAttribute(SamplingAttributes.SAMPLED.toString(), true);
+        while (currentParent != null && currentParent.getAttributeBoolean(SamplingAttributes.SAMPLED.getValue()) == null) {
+            currentParent.addAttribute(SamplingAttributes.SAMPLED.getValue(), true);
             currentParent = currentParent.getParentSpan();
         }
     }

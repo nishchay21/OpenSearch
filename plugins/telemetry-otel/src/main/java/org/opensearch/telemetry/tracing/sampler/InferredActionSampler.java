@@ -68,7 +68,7 @@ public class InferredActionSampler implements Sampler {
         boolean inferredSamplingAllowListed = telemetrySettings.getInferredSamplingAllowListed();
         if (inferredSamplingAllowListed) {
             Attributes customSampleAttributes = Attributes.builder()
-                .put(SamplingAttributes.SAMPLER.toString(), SamplingAttributes.INFERRED_SAMPLER.toString())
+                .put(SamplingAttributes.SAMPLER.getValue(), SamplingAttributes.INFERRED_SAMPLER.getValue())
                 .putAll(attributes)
                 .build();
             SamplingResult result = SamplingResult.recordAndSample();
