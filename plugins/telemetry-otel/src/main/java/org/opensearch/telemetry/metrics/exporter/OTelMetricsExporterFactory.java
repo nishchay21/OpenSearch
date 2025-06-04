@@ -8,6 +8,10 @@
 
 package org.opensearch.telemetry.metrics.exporter;
 
+import io.opentelemetry.exporter.logging.LoggingMetricExporter;
+import io.opentelemetry.exporter.otlp.metrics.OtlpGrpcMetricExporter;
+import io.opentelemetry.sdk.metrics.data.AggregationTemporality;
+import io.opentelemetry.sdk.metrics.export.AggregationTemporalitySelector;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.SpecialPermission;
@@ -46,7 +50,17 @@ public class OTelMetricsExporterFactory {
      */
     public static MetricExporter create(Settings settings) {
         Class<MetricExporter> MetricExporterProviderClass = OTelTelemetrySettings.OTEL_METRICS_EXPORTER_CLASS_SETTING.get(settings);
-        MetricExporter metricExporter = instantiateExporter(MetricExporterProviderClass);
+
+        MetricExporter metricExporter;
+        if (MetricExporterProviderClass.getName().equals(LoggingMetricExporter.class.getName())) {
+            metricExporter = LoggingMetricExporter.create(AggregationTemporality.DELTA);
+        } else if (MetricExporterProviderClass.getName().equals(OtlpGrpcMetricExporter.class.getName())) {
+            metricExporter = OtlpGrpcMetricExporter.builder()
+                .setAggregationTemporalitySelector(AggregationTemporalitySelector.deltaPreferred())
+                .build();
+        } else {
+            metricExporter = instantiateExporter(MetricExporterProviderClass);
+        }
         logger.info("Successfully instantiated the Metrics MetricExporter class {}", MetricExporterProviderClass);
         return metricExporter;
     }

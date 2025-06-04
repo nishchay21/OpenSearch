@@ -30,14 +30,14 @@ public class TelemetrySettings {
 
     public static final Setting<Boolean> TRACER_FEATURE_ENABLED_SETTING = Setting.boolSetting(
         "telemetry.feature.tracer.enabled",
-        false,
+        true,
         Setting.Property.NodeScope,
         Setting.Property.Final
     );
 
     public static final Setting<Boolean> METRICS_FEATURE_ENABLED_SETTING = Setting.boolSetting(
         "telemetry.feature.metrics.enabled",
-        false,
+        true,
         Setting.Property.NodeScope,
         Setting.Property.Final
     );

@@ -89,7 +89,7 @@ public class FeatureFlags {
 
     public static final Setting<Boolean> EXTENSIONS_SETTING = Setting.boolSetting(EXTENSIONS, false, Property.NodeScope);
 
-    public static final Setting<Boolean> TELEMETRY_SETTING = Setting.boolSetting(TELEMETRY, false, Property.NodeScope);
+    public static final Setting<Boolean> TELEMETRY_SETTING = Setting.boolSetting(TELEMETRY, true, Property.NodeScope);
 
     public static final Setting<Boolean> DATETIME_FORMATTER_CACHING_SETTING = Setting.boolSetting(
         DATETIME_FORMATTER_CACHING,

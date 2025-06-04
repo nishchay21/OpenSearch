@@ -125,3 +125,6 @@ ${path.logs}
 # Gates the functionality of star tree index, which improves the performance of search aggregations.
 #
 #opensearch.experimental.feature.composite_index.star_tree.enabled: true
+telemetry.feature.tracer.enabled: false
+telemetry.feature.metrics.enabled: true
+telemetry.tracer.sampler.probability: 1.0

@@ -86,3 +86,5 @@ ${error.file}
 
 21-:-javaagent:agent/opensearch-agent.jar
 21-:--add-opens=java.base/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED
+
+-Dopensearch.experimental.feature.telemetry.enabled=true
