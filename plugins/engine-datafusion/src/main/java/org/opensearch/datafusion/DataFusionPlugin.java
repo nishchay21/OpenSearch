@@ -8,17 +8,12 @@
 
 package org.opensearch.datafusion;
 
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
+import org.apache.calcite.sql.SqlOperatorTable;
+import org.opensearch.analytics.backend.EngineBridge;
+import org.opensearch.analytics.spi.AnalyticsBackEndPlugin;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.node.DiscoveryNodes;
 import org.opensearch.cluster.service.ClusterService;
-import org.opensearch.common.cache.CacheType;
 import org.opensearch.common.settings.ClusterSettings;
 import org.opensearch.common.settings.IndexScopedSettings;
 import org.opensearch.common.settings.Setting;
@@ -36,32 +31,41 @@ import org.opensearch.datafusion.search.DatafusionSearcher;
 import org.opensearch.datafusion.search.cache.CacheSettings;
 import org.opensearch.env.Environment;
 import org.opensearch.env.NodeEnvironment;
-import org.opensearch.index.IndexSettings;
-import org.opensearch.index.shard.ShardPath;
-import org.opensearch.plugins.spi.vectorized.DataFormat;
-import org.opensearch.plugins.spi.vectorized.DataSourceCodec;
-import org.opensearch.search.ContextEngineSearcher;
 import org.opensearch.index.engine.SearchExecEngine;
 import org.opensearch.index.engine.exec.FileMetadata;
+import org.opensearch.index.engine.exec.coord.CompositeEngine;
+import org.opensearch.index.shard.ShardPath;
 import org.opensearch.plugins.ActionPlugin;
-import org.opensearch.plugins.SearchEnginePlugin;
+import org.opensearch.plugins.ExtensiblePlugin;
 import org.opensearch.plugins.Plugin;
+import org.opensearch.plugins.SearchAnalyticsBackEndPlugin;
+import org.opensearch.plugins.SearchEnginePlugin;
+import org.opensearch.plugins.spi.vectorized.DataFormat;
+import org.opensearch.plugins.spi.vectorized.DataSourceCodec;
 import org.opensearch.repositories.RepositoriesService;
 import org.opensearch.rest.RestController;
 import org.opensearch.rest.RestHandler;
 import org.opensearch.script.ScriptService;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.client.Client;
-import org.opensearch.vectorized.execution.jni.NativeObjectStoreProvider;
-import org.opensearch.vectorized.execution.search.spi.RecordBatchStream;
 import org.opensearch.watcher.ResourceWatcherService;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import org.apache.arrow.memory.RootAllocator;
+import org.opensearch.datafusion.search.DatafusionReader;
+import org.opensearch.index.engine.exec.WriterFileSet;
+import org.opensearch.index.engine.exec.coord.CatalogSnapshot;
 
 import static org.opensearch.datafusion.core.DataFusionRuntimeEnv.DATAFUSION_MEMORY_POOL_CONFIGURATION;
 import static org.opensearch.datafusion.core.DataFusionRuntimeEnv.DATAFUSION_SPILL_MEMORY_LIMIT_CONFIGURATION;
@@ -71,9 +75,13 @@ import static org.opensearch.datafusion.core.DataFusionRuntimeEnv.DATAFUSION_SPI
  * Main plugin class for OpenSearch DataFusion integration.
  *
  */
-public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEnginePlugin {
+public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEnginePlugin, AnalyticsBackEndPlugin, ExtensiblePlugin, SearchAnalyticsBackEndPlugin {
 
     private DataFusionService dataFusionService;
+
+    public DataFusionService getDataFusionService() {
+        return dataFusionService;
+    }
     private final boolean isDataFusionEnabled;
 
     /**
@@ -88,6 +96,18 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEngi
 
     /**
      * Creates components for the DataFusion plugin.
+     * @param client The client instance.
+     * @param clusterService The cluster service instance.
+     * @param threadPool The thread pool instance.
+     * @param resourceWatcherService The resource watcher service instance.
+     * @param scriptService The script service instance.
+     * @param xContentRegistry The named XContent registry.
+     * @param environment The environment instance.
+     * @param nodeEnvironment The node environment instance.
+     * @param namedWriteableRegistry The named writeable registry.
+     * @param indexNameExpressionResolver The index name expression resolver instance.
+     * @param repositoriesServiceSupplier The supplier for the repositories service.
+     * @return Collection of created components
      */
     @Override
     public Collection<Object> createComponents(
@@ -202,6 +222,82 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEngi
             return Collections.emptyList();
         }
         return List.of(new ActionHandler<>(NodesDataFusionInfoAction.INSTANCE, TransportNodesDataFusionInfoAction.class));
+    }
+
+    @Override
+    public String name() {
+        return "DataFusion";
+    }
+
+    @Override
+    public EngineBridge<?, ?, ?> bridge(CompositeEngine engine, CatalogSnapshot snapshot) {
+        DatafusionEngine dfEngine = (DatafusionEngine) engine.getEngine(name());
+        long runtimePointer = dataFusionService.getRuntimePointer();
+        Collection<WriterFileSet> files = snapshot.getSearchableFiles("parquet");
+        // Derive directory path from the first WriterFileSet, or use empty string if no files
+        String directoryPath = files.stream()
+            .findFirst()
+            .map(WriterFileSet::getDirectory)
+            .orElse("");
+        // Pass null for snapshotRef — the caller (DefaultPlanExecutor) owns the snapshot lifecycle
+        // via try-with-resources; the bridge/reader should not release it independently.
+        DatafusionReader reader = new DatafusionReader(directoryPath, null, files);
+        return new DataFusionBridge(runtimePointer, reader, new RootAllocator(Long.MAX_VALUE));
+    }
+
+    @Override
+    public SqlOperatorTable operatorTable() {
+        return null;
+    }
+
+    // Forward AnalyticsBackEndPlugin extensions from child plugins (e.g. analytics-backend-datafusion)
+    private final List<AnalyticsBackEndPlugin> childBackends = new ArrayList<>();
+
+    @Override
+    public void loadExtensions(ExtensionLoader loader) {
+        for (AnalyticsBackEndPlugin ext : loader.loadExtensions(AnalyticsBackEndPlugin.class)) {
+            // Inject ourselves so child backends can access the DataFusionService
+            if (ext instanceof ParentAware) {
+                ((ParentAware) ext).setParentPlugin(this);
+            }
+            childBackends.add(ext);
+        }
+    }
+
+    public List<AnalyticsBackEndPlugin> getChildBackends() {
+        return childBackends;
+    }
+
+    /** Marker interface for child backends that need the parent plugin. */
+    // ---- SearchAnalyticsBackEndPlugin (delegates to child backend if available) ----
+
+    private SearchAnalyticsBackEndPlugin getChildSearchBackend() {
+        for (AnalyticsBackEndPlugin child : childBackends) {
+            if (child instanceof SearchAnalyticsBackEndPlugin) {
+                return (SearchAnalyticsBackEndPlugin) child;
+            }
+        }
+        return null;
+    }
+
+    @Override
+    public org.opensearch.index.engine.exec.CatalogSnapshotAwareReaderManager<?> createReaderManager(
+            org.opensearch.plugins.spi.vectorized.DataFormat format, ShardPath shardPath) throws IOException {
+        SearchAnalyticsBackEndPlugin child = getChildSearchBackend();
+        if (child != null) return child.createReaderManager(format, shardPath);
+        return null;
+    }
+
+    @Override
+    public org.opensearch.index.engine.exec.SearchExecEngine<?, ?> createSearchExecEngine(
+            org.opensearch.plugins.spi.vectorized.DataFormat format, ShardPath shardPath) throws IOException {
+        SearchAnalyticsBackEndPlugin child = getChildSearchBackend();
+        if (child != null) return child.createSearchExecEngine(format, shardPath);
+        return null;
+    }
+
+    public interface ParentAware {
+        void setParentPlugin(DataFusionPlugin parent);
     }
 //
 //    @Override
