@@ -8,13 +8,14 @@ use datafusion::arrow::array::RecordBatch;
 use jni::objects::{GlobalRef, JMap, JObject, JObjectArray, JString, JValue};
 use jni::sys::jlong;
 use jni::JNIEnv;
-use object_store::{path::Path as ObjectPath, ObjectMeta};
+use object_store::{path::Path as ObjectPath, ObjectMeta, ObjectStore};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
 use std::sync::Arc;
 use datafusion::error::DataFusionError;
 use datafusion::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use vectorized_exec_spi::log_info;
 use crate::{CustomFileMeta, FileStats};
 
 
@@ -129,6 +130,7 @@ pub fn throw_exception(env: &mut JNIEnv, message: &str) {
 pub fn create_file_meta_from_filenames(
     base_path: &str,
     filenames: Vec<String>,
+    object_store: Option<Arc<dyn ObjectStore>>,
 ) -> Result<Vec<CustomFileMeta>, DataFusionError> {
     let mut row_base: i64 = 0;
     filenames
@@ -138,35 +140,73 @@ pub fn create_file_meta_from_filenames(
 
             // Handle both full paths and relative filenames
             let full_path = if filename.starts_with('/') || filename.contains(base_path) {
-                // Already a full path
                 filename.to_string()
             } else {
-                // Just a filename, needs base_path
                 format!("{}/{}", base_path.trim_end_matches('/'), filename)
             };
 
-            let file_size = fs::metadata(&full_path).map(|m| m.len()).unwrap_or(0);
-            let file_result = fs::File::open(&full_path.clone());
-            if file_result.is_err() {
-                return Err(DataFusionError::Execution(format!(
-                    "{} {}",
-                    file_result.unwrap_err().to_string(),
-                    full_path
-                )));
-            }
-            let file = file_result.unwrap();
-            let parquet_metadata = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-            let row_group_row_counts: Vec<i64> = parquet_metadata
-                .metadata()
-                .row_groups()
-                .iter()
-                .map(|row_group| row_group.num_rows())
-                .collect();
+            let (file_size, row_group_row_counts, modified) = if let Some(store) = object_store.as_ref() {
+                // Always go through the object store when available.
+                // TieredObjectStore handles routing: LOCAL files read from local fs,
+                // REMOTE files read from the remote store via the FileRegistry.
+                let obj_path = ObjectPath::from(full_path.trim_start_matches('/'));
+                let rt = tokio::runtime::Runtime::new().map_err(|e| {
+                    DataFusionError::Execution(format!("Failed to create tokio runtime: {}", e))
+                })?;
 
-            let modified = fs::metadata(&full_path)
-                .and_then(|m| m.modified())
-                .map(|t| DateTime::<Utc>::from(t))
-                .unwrap_or_else(|_| Utc::now());
+                let bytes = rt.block_on(async {
+                    let result = store.get(&obj_path).await.map_err(|e| {
+                        DataFusionError::Execution(format!(
+                            "Object store get failed for {}: {}", full_path, e
+                        ))
+                    })?;
+                    result.bytes().await.map_err(|e| {
+                        DataFusionError::Execution(format!(
+                            "Object store read bytes failed for {}: {}", full_path, e
+                        ))
+                    })
+                })?;
+
+                let file_size = bytes.len() as u64;
+                let parquet_metadata = ParquetRecordBatchReaderBuilder::try_new(bytes)
+                    .map_err(|e| DataFusionError::Execution(format!(
+                        "Failed to read parquet metadata via object store: {} {}", e, full_path
+                    )))?;
+                let row_group_row_counts: Vec<i64> = parquet_metadata
+                    .metadata()
+                    .row_groups()
+                    .iter()
+                    .map(|rg| rg.num_rows())
+                    .collect();
+
+                log_info!(
+                    "[create_file_meta] object store read: {}, size={}, row_groups={}",
+                    full_path, file_size, row_group_row_counts.len()
+                );
+
+                (file_size, row_group_row_counts, Utc::now())
+            } else {
+                // No object store (hot indices) — read directly from local fs
+                let file = fs::File::open(&full_path).map_err(|e| {
+                    DataFusionError::Execution(format!("{} {}", e, full_path))
+                })?;
+                let file_size = fs::metadata(&full_path).map(|m| m.len()).unwrap_or(0);
+                let parquet_metadata = ParquetRecordBatchReaderBuilder::try_new(file)
+                    .map_err(|e| DataFusionError::Execution(format!(
+                        "Failed to read parquet metadata: {} {}", e, full_path
+                    )))?;
+                let row_group_row_counts: Vec<i64> = parquet_metadata
+                    .metadata()
+                    .row_groups()
+                    .iter()
+                    .map(|rg| rg.num_rows())
+                    .collect();
+                let modified = fs::metadata(&full_path)
+                    .and_then(|m| m.modified())
+                    .map(|t| DateTime::<Utc>::from(t))
+                    .unwrap_or_else(|_| Utc::now());
+                (file_size, row_group_row_counts, modified)
+            };
 
             let file_meta = CustomFileMeta::new(
                 row_group_row_counts.clone(),
@@ -179,7 +219,6 @@ pub fn create_file_meta_from_filenames(
                     version: None,
                 },
             );
-            //TODO: ensure ordering of files
             row_base += row_group_row_counts.iter().sum::<i64>();
             Ok(file_meta)
         })

@@ -77,6 +77,7 @@ import org.opensearch.index.shard.IndexShard;
 import org.opensearch.index.shard.IndexingOperationListener;
 import org.opensearch.index.shard.SearchOperationListener;
 import org.opensearch.index.similarity.SimilarityService;
+import org.opensearch.index.store.CachedCompositeStoreDirectoryFactory;
 import org.opensearch.index.store.CompositeStoreDirectoryFactory;
 import org.opensearch.index.store.DefaultCompositeDirectoryFactory;
 import org.opensearch.index.store.FsDirectoryFactory;
@@ -258,6 +259,8 @@ public final class IndexModule {
 
     private static final DeprecationLogger DEPRECATION_LOGGER = DeprecationLogger.getLogger(IndexModule.class);
 
+    public static final Setting<String> INDEX_MIGRATION_STATE = Setting.simpleString("index.migration.state", Property.IndexScope);
+
     private final IndexSettings indexSettings;
     private final AnalysisRegistry analysisRegistry;
     private final EngineFactory engineFactory;
@@ -269,6 +272,7 @@ public final class IndexModule {
     private final Map<String, IndexStorePlugin.DirectoryFactory> directoryFactories;
     private final Map<String, IndexStorePlugin.CompositeDirectoryFactory> compositeDirectoryFactories;
     private final Map<String, CompositeStoreDirectoryFactory> compositeStoreDirectoryFactories;
+    private final Map<String, CachedCompositeStoreDirectoryFactory> cachedCompositeStoreDirectoryFactories;
     private final SetOnce<BiFunction<IndexSettings, IndicesQueryCache, QueryCache>> forceQueryCacheProvider = new SetOnce<>();
     private final List<SearchOperationListener> searchOperationListeners = new ArrayList<>();
     private final List<IndexingOperationListener> indexOperationListeners = new ArrayList<>();
@@ -303,7 +307,8 @@ public final class IndexModule {
         final Map<String, IndexStorePlugin.StoreFactory> storeFactories,
         final FileCache fileCache,
         final CompositeIndexSettings compositeIndexSettings,
-        final Map<String, CompositeStoreDirectoryFactory> compositeStoreDirectoryFactories
+        final Map<String, CompositeStoreDirectoryFactory> compositeStoreDirectoryFactories,
+        final Map<String, CachedCompositeStoreDirectoryFactory> cachedCompositeStoreDirectoryFactories
     ) {
         this.indexSettings = indexSettings;
         this.analysisRegistry = analysisRegistry;
@@ -314,6 +319,7 @@ public final class IndexModule {
         this.directoryFactories = Collections.unmodifiableMap(directoryFactories);
         this.compositeDirectoryFactories = Collections.unmodifiableMap(compositeDirectoryFactories);
         this.compositeStoreDirectoryFactories = Collections.unmodifiableMap(compositeStoreDirectoryFactories);
+        this.cachedCompositeStoreDirectoryFactories = Collections.unmodifiableMap(cachedCompositeStoreDirectoryFactories);
         this.allowExpensiveQueries = allowExpensiveQueries;
         this.expressionResolver = expressionResolver;
         this.recoveryStateFactories = recoveryStateFactories;
@@ -346,6 +352,7 @@ public final class IndexModule {
             Collections.emptyMap(),
             null,
             null,
+            Collections.emptyMap(),
             Collections.emptyMap()
         );
     }
@@ -370,6 +377,13 @@ public final class IndexModule {
             throw new IllegalArgumentException("setting must not be null");
         }
         indexSettings.getScopedSettings().addSettingsUpdateConsumer(setting, consumer, validator);
+    }
+
+    /**
+     * Returns the index {@link Settings} for this index
+     */
+    public IndexSettings getIndexSettings() {
+        return indexSettings;
     }
 
     /**
@@ -771,6 +785,10 @@ public final class IndexModule {
             indexSettings,
             compositeStoreDirectoryFactories
         );
+        final CachedCompositeStoreDirectoryFactory cachedCompositeStoreDirectoryFactory = getCachedCompositeStoreDirectoryFactory(
+            indexSettings,
+            cachedCompositeStoreDirectoryFactories
+        );
         final IndexStorePlugin.RecoveryStateFactory recoveryStateFactory = getRecoveryStateFactory(indexSettings, recoveryStateFactories);
         QueryCache queryCache = null;
         IndexAnalyzers indexAnalyzers = null;
@@ -835,7 +853,8 @@ public final class IndexModule {
                 clusterDefaultMaxMergeAtOnceSupplier,
                 searchEnginePlugin,
                 pluginsService,
-                compositeStoreDirectoryFactory
+                compositeStoreDirectoryFactory,
+                cachedCompositeStoreDirectoryFactory
             );
             success = true;
             return indexService;
@@ -904,6 +923,28 @@ public final class IndexModule {
         // For now, return the default factory if available
         // In future, could add index setting to select specific factory type
         return compositeStoreDirectoryFactories.get("default");
+    }
+
+    /**
+     * Resolves the CachedCompositeStoreDirectoryFactory for the given index settings.
+     * Checks the composite store type setting to find a matching cached factory.
+     * Falls back to null if no cached factory is registered for the index type.
+     */
+    private static CachedCompositeStoreDirectoryFactory getCachedCompositeStoreDirectoryFactory(
+        final IndexSettings indexSettings,
+        final Map<String, CachedCompositeStoreDirectoryFactory> cachedCompositeStoreDirectoryFactories
+    ) {
+        if (cachedCompositeStoreDirectoryFactories.isEmpty()) {
+            return null;
+        }
+        // Check composite store type setting for a matching cached factory
+        final String compositeStoreType = indexSettings.getValue(INDEX_COMPOSITE_STORE_TYPE_SETTING);
+        CachedCompositeStoreDirectoryFactory factory = cachedCompositeStoreDirectoryFactories.get(compositeStoreType);
+        if (factory != null) {
+            return factory;
+        }
+        // No cached factory for this index type — normal indices don't need one
+        return null;
     }
 
     private static IndexStorePlugin.RecoveryStateFactory getRecoveryStateFactory(

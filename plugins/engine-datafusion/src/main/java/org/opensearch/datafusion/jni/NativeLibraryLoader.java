@@ -23,7 +23,11 @@ import java.nio.file.StandardCopyOption;
 
 /**
  * Handles loading of the native JNI library.
- * TODO move to common lib once we switch to passing absolute lib paths
+ * <p>
+ * Loads the {@code .so} on DataFusion's plugin classloader so that
+ * {@link NativeBridge} native methods can be resolved. Cross-classloader
+ * access for tiered-storage is handled via the {@link org.opensearch.vectorized.execution.jni.TieredStoreNativeBridge}
+ * interface registered in {@link org.opensearch.vectorized.execution.jni.SharedNativeLibrary}.
  */
 public final class NativeLibraryLoader {
 
@@ -48,15 +52,15 @@ public final class NativeLibraryLoader {
             loaded = true;
             return;
         } catch (UnsatisfiedLinkError ignored) {
-            logger.warn("Failed to load library '" + libraryName + "' from system path");
+            logger.warn("Failed to load library '{}' from system path", libraryName);
         }
 
-        //Look-up with default path
+        // Try extracting from JAR resources (default path)
         try {
             loadFromResources(DEFAULT_PATH, libraryName);
             return;
-        }  catch (UnsatisfiedLinkError ignored) {
-            logger.warn("Failed to load library '" + libraryName + "' from default path");
+        } catch (UnsatisfiedLinkError ignored) {
+            logger.warn("Failed to load library '{}' from default resource path", libraryName);
         }
 
         // Try platform-specific directory

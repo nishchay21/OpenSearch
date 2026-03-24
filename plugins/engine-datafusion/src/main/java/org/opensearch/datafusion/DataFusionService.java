@@ -17,6 +17,7 @@ import org.opensearch.datafusion.jni.NativeBridge;
 import org.opensearch.datafusion.search.cache.CacheManager;
 import org.opensearch.plugins.spi.vectorized.DataFormat;
 import org.opensearch.plugins.spi.vectorized.DataSourceCodec;
+import org.opensearch.vectorized.execution.jni.NativeObjectStoreProvider;
 
 import java.util.Map;
 
@@ -29,6 +30,8 @@ public class DataFusionService extends AbstractLifecycleComponent {
 
     private final DataSourceRegistry dataSourceRegistry;
     private final DataFusionRuntimeEnv runtimeEnv;
+    private volatile NativeObjectStoreProvider nativeObjectStoreProvider;
+    private volatile boolean objectStoreRegistered = false;
 
 
     /**
@@ -40,6 +43,34 @@ public class DataFusionService extends AbstractLifecycleComponent {
         // to verify jni
         String version = NativeBridge.getVersionInfo();
         this.runtimeEnv = new DataFusionRuntimeEnv(clusterService, spill_dir);
+    }
+
+    /**
+     * Set the native object store provider for lazy registration.
+     * The ObjectStore will be registered into the runtime when first needed
+     * (after RepositoriesService is available).
+     */
+    public void setNativeObjectStoreProvider(NativeObjectStoreProvider provider) {
+        this.nativeObjectStoreProvider = provider;
+        logger.info("[DataFusionService] NativeObjectStoreProvider set — ObjectStore will be registered lazily");
+    }
+
+    /**
+     * Register the TieredObjectStore into the DataFusion runtime.
+     * Called only for warm+optimized indices where reads may need to go through
+     * the tiered storage path. Hot indices skip this entirely.
+     */
+    public synchronized void ensureObjectStoreRegistered() {
+        if (objectStoreRegistered || nativeObjectStoreProvider == null) {
+            return;
+        }
+        long dataPtr = nativeObjectStoreProvider.getNativeObjectStorePointer();
+        long vtablePtr = nativeObjectStoreProvider.getNativeObjectStoreVtablePointer();
+        if (dataPtr != 0 && vtablePtr != 0) {
+            NativeBridge.registerObjectStore(runtimeEnv.getPointer(), dataPtr, vtablePtr);
+            objectStoreRegistered = true;
+            logger.info("[DataFusionService] TieredObjectStore registered into runtime: data_ptr={}, vtable_ptr={}", dataPtr, vtablePtr);
+        }
     }
 
     @Override

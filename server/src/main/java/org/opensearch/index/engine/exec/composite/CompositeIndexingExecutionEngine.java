@@ -41,6 +41,9 @@ import java.util.Map;
 
 public class CompositeIndexingExecutionEngine implements IndexingExecutionEngine<Any> {
 
+    private static final org.apache.logging.log4j.Logger logger =
+        org.apache.logging.log4j.LogManager.getLogger(CompositeIndexingExecutionEngine.class);
+
     private final CompositeDataFormatWriterPool dataFormatWriterPool;
     private final Any dataFormat;
     private final AtomicLong writerGeneration;
@@ -194,6 +197,18 @@ public class CompositeIndexingExecutionEngine implements IndexingExecutionEngine
 
     @Override
     public void close() throws IOException {
+        // Drain and close any writers still held by the pool so that native
+        // resources (Rust WRITER_MANAGER entries, Arrow buffers) are released
+        // before the delegate engines (and their ArrowBufferPool) are closed.
+        try {
+            List<CompositeDataFormatWriter> remaining = dataFormatWriterPool.checkoutAll();
+            for (CompositeDataFormatWriter w : remaining) {
+                w.close();
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to drain writer pool during close", e);
+        }
+        dataFormatWriterPool.close();
         IOUtils.close(delegates);
     }
 }

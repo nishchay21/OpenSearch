@@ -394,7 +394,7 @@ public class CompositeEngine implements LifecycleAware, Closeable, Indexer, Chec
                     }
 
                     SearchExecEngine<?, ?, ?, ?> newSearchEngine =
-                        searchEnginePlugin.createEngine(dataFormat, formatFiles, shardPath);
+                        searchEnginePlugin.createEngine(dataFormat, formatFiles, shardPath, indexSettings);
 
                     currentSearchEngines.add(newSearchEngine);
                     readEngines.put(dataFormat, currentSearchEngines);

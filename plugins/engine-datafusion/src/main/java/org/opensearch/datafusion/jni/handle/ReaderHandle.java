@@ -20,8 +20,8 @@ public final class ReaderHandle extends RefCountedNativeHandle {
 
     private final Runnable onClose;
 
-    public ReaderHandle(String path, String[] files, Runnable onClose) {
-        super(NativeBridge.createDatafusionReader(path, files));
+    public ReaderHandle(String path, String[] files, long runtimePtr, Runnable onClose) {
+        super(NativeBridge.createDatafusionReader(path, files, runtimePtr));
         this.onClose = onClose;
     }
 

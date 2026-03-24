@@ -376,7 +376,14 @@ public class RecoveryTarget extends ReplicationTarget implements RecoveryTargetH
             final Store store = store();
             store.incRef();
             try {
-                if (indexShard.isOptimizedIndex()) {
+                if (indexShard.indexSettings().isWarmIndex()) {
+                    // On warm indices, parquet files are never copied locally (copySegmentFiles
+                    // is skipped) so cleanupAndVerifyComposite would fail: listFileMetadata()
+                    // only sees local files → parquet appears "missing" → verification throws.
+                    // calculateChecksum also reads from local disk which fails for evicted files.
+                    // Safe to skip because no local writes have happened during recovery.
+                    logger.info("Skipping cleanupAndVerifyComposite for warm index [{}]", indexShard.shardId());
+                } else if (indexShard.isOptimizedIndex()) {
                     // For optimized indices, use format-aware cleanup that handles both Lucene
                     // and parquet files via CompositeStoreDirectory, ensuring parquet files
                     // that were just transferred are not incorrectly deleted.

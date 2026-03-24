@@ -197,4 +197,29 @@ public interface IndexStorePlugin {
     default Map<String, StoreFactory> getStoreFactories() {
         return Collections.emptyMap();
     }
+
+    /**
+     * The {@link org.opensearch.index.store.CompositeStoreDirectoryFactory} mappings for this plugin.
+     * Allows plugins to provide custom CompositeStoreDirectory creation logic
+     * (e.g., tiered storage with format-specific caching).
+     *
+     * @return a map from factory type key to a CompositeStoreDirectoryFactory
+     */
+    @ExperimentalApi
+    default Map<String, org.opensearch.index.store.CompositeStoreDirectoryFactory> getCompositeStoreDirectoryFactories() {
+        return Collections.emptyMap();
+    }
+
+    /**
+     * The {@link org.opensearch.index.store.CachedCompositeStoreDirectoryFactory} mappings for this plugin.
+     * Like {@link #getCompositeStoreDirectoryFactories()} but receives {@link org.opensearch.index.store.remote.filecache.FileCache}
+     * at shard creation time for per-format cache wiring.
+     *
+     * @return a map from factory type key to a CachedCompositeStoreDirectoryFactory
+     */
+    @ExperimentalApi
+    default Map<String, org.opensearch.index.store.CachedCompositeStoreDirectoryFactory> getCachedCompositeStoreDirectoryFactories() {
+        return Collections.emptyMap();
+    }
+
 }

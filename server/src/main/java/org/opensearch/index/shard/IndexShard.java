@@ -5876,23 +5876,27 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
             if (recoveryState.getStage() == RecoveryState.Stage.INDEX) {
                 Store.StoreDirectory directory = isOptimizedIndex() ? store().compositeStoreDirectory() : (Store.StoreDirectory) store().directory();
                 storeDirectory = new StoreRecovery.StatsDirectoryWrapper(directory, recoveryState.getIndex());
-                for (String file : filteredSegments.keySet()) {
-                    long checksum = Long.parseLong(filteredSegments.get(file).getChecksum());
-                    boolean fileExistsLocally;
+                // On warm indices, copySegmentFiles is skipped — no need to check local checksums.
+                // Files are served from remote via the cache strategy.
+                if (indexSettings.isWarmIndex() == false) {
+                    for (String file : filteredSegments.keySet()) {
+                        long checksum = Long.parseLong(filteredSegments.get(file).getChecksum());
+                        boolean fileExistsLocally;
 
-                    // Parse FileMetadata from serialized key to get actual filename
-                    FileMetadata fileMetadata = new FileMetadata(file);
-                    if (isOptimizedIndex() && directory instanceof CompositeStoreDirectory) {
-                        fileExistsLocally = localDirectoryContains((CompositeStoreDirectory) directory, fileMetadata, checksum);
-                    } else {
-                        // For non-optimized indices, use the actual filename from FileMetadata
-                        fileExistsLocally = localDirectoryContainsFile(storeDirectory, fileMetadata.file(), checksum);
-                    }
+                        // Parse FileMetadata from serialized key to get actual filename
+                        FileMetadata fileMetadata = new FileMetadata(file);
+                        if (isOptimizedIndex() && directory instanceof CompositeStoreDirectory) {
+                            fileExistsLocally = localDirectoryContains((CompositeStoreDirectory) directory, fileMetadata, checksum);
+                        } else {
+                            // For non-optimized indices, use the actual filename from FileMetadata
+                            fileExistsLocally = localDirectoryContainsFile(storeDirectory, fileMetadata.file(), checksum);
+                        }
 
-                    if (overrideLocal || !fileExistsLocally) {
-                        recoveryState.getIndex().addFileDetail(file, filteredSegments.get(file).getLength(), false);
-                    } else {
-                        recoveryState.getIndex().addFileDetail(file, filteredSegments.get(file).getLength(), true);
+                        if (overrideLocal || !fileExistsLocally) {
+                            recoveryState.getIndex().addFileDetail(file, filteredSegments.get(file).getLength(), false);
+                        } else {
+                            recoveryState.getIndex().addFileDetail(file, filteredSegments.get(file).getLength(), true);
+                        }
                     }
                 }
             } else {

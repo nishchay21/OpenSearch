@@ -100,9 +100,17 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
     private final RootAllocator rootAllocator;
 
     public DatafusionEngine(DataFormat dataFormat, Collection<FileMetadata> formatCatalogSnapshot, DataFusionService dataFusionService, ShardPath shardPath) throws IOException {
+        this(dataFormat, formatCatalogSnapshot, dataFusionService, shardPath, false);
+    }
+
+    public DatafusionEngine(DataFormat dataFormat, Collection<FileMetadata> formatCatalogSnapshot, DataFusionService dataFusionService, ShardPath shardPath, boolean useObjectStore) throws IOException {
         this.dataFormat = dataFormat;
+        if (useObjectStore) {
+            dataFusionService.ensureObjectStoreRegistered();
+        }
         this.datafusionReaderManager = new DatafusionReaderManager(
-            shardPath.getDataPath().resolve(dataFormat.getName()).toString(), formatCatalogSnapshot, dataFormat.getName()
+            shardPath.getDataPath().resolve(dataFormat.getName()).toString(), formatCatalogSnapshot, dataFormat.getName(),
+            dataFusionService.getRuntimePointer()
         );
         this.datafusionService = dataFusionService;
         this.cacheManager = datafusionService.getCacheManager();

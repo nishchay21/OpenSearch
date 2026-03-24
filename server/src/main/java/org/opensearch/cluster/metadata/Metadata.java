@@ -48,6 +48,7 @@ import org.opensearch.cluster.block.ClusterBlock;
 import org.opensearch.cluster.block.ClusterBlockLevel;
 import org.opensearch.cluster.coordination.CoordinationMetadata;
 import org.opensearch.cluster.decommission.DecommissionAttributeMetadata;
+import org.opensearch.cluster.routing.RoutingPool;
 import org.opensearch.common.Nullable;
 import org.opensearch.common.UUIDs;
 import org.opensearch.common.annotation.PublicApi;
@@ -67,9 +68,12 @@ import org.opensearch.core.xcontent.ToXContentFragment;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.core.xcontent.XContentParser;
 import org.opensearch.gateway.MetadataStateFormat;
+import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexNotFoundException;
+import org.opensearch.index.shard.UltrawarmShardUtils;
 import org.opensearch.indices.replication.common.ReplicationType;
 import org.opensearch.plugins.MapperPlugin;
+import org.opensearch.snapshots.IndexType;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -96,6 +100,9 @@ import java.util.stream.StreamSupport;
 
 import static org.opensearch.common.settings.Settings.readSettingsFromStream;
 import static org.opensearch.common.settings.Settings.writeSettingsToStream;
+import static org.opensearch.index.shard.UltrawarmShardUtils.HOT_BOX_TYPE;
+import static org.opensearch.index.shard.UltrawarmShardUtils.INDEX_BOX_TYPE_SETTING_KEY;
+import static org.opensearch.index.shard.UltrawarmShardUtils.WARM_BOX_TYPE;
 
 /**
  * Metadata information
@@ -207,25 +214,8 @@ public class Metadata implements Iterable<IndexMetadata>, Diffable<Metadata>, To
         EnumSet.of(ClusterBlockLevel.WRITE, ClusterBlockLevel.METADATA_WRITE)
     );
 
-    public static final ClusterBlock CLUSTER_CREATE_INDEX_BLOCK = new ClusterBlock(
-        10,
-        "cluster create-index blocked (api)",
-        false,
-        false,
-        false,
-        RestStatus.FORBIDDEN,
-        EnumSet.of(ClusterBlockLevel.CREATE_INDEX)
-    );
-
     public static final Setting<Boolean> SETTING_READ_ONLY_ALLOW_DELETE_SETTING = Setting.boolSetting(
         "cluster.blocks.read_only_allow_delete",
-        false,
-        Property.Dynamic,
-        Property.NodeScope
-    );
-
-    public static final Setting<Boolean> SETTING_CREATE_INDEX_BLOCK_SETTING = Setting.boolSetting(
-        "cluster.blocks.create_index",
         false,
         Property.Dynamic,
         Property.NodeScope
@@ -239,6 +229,23 @@ public class Metadata implements Iterable<IndexMetadata>, Diffable<Metadata>, To
         true,
         RestStatus.FORBIDDEN,
         EnumSet.of(ClusterBlockLevel.WRITE, ClusterBlockLevel.METADATA_WRITE)
+    );
+
+    public static final Setting<Boolean> SETTING_CREATE_INDEX_BLOCK_SETTING = Setting.boolSetting(
+        "cluster.blocks.create_index",
+        false,
+        Property.Dynamic,
+        Property.NodeScope
+    );
+
+    public static final ClusterBlock CLUSTER_CREATE_INDEX_BLOCK = new ClusterBlock(
+        10,
+        "cluster create-index blocked (api)",
+        false,
+        false,
+        false,
+        RestStatus.FORBIDDEN,
+        EnumSet.of(ClusterBlockLevel.CREATE_INDEX)
     );
 
     public static final Metadata EMPTY_METADATA = builder().build();
@@ -270,7 +277,12 @@ public class Metadata implements Iterable<IndexMetadata>, Diffable<Metadata>, To
     private final Map<String, Custom> customs;
 
     private final transient int totalNumberOfShards; // Transient ? not serializable anyway?
-    private final int totalOpenIndexShards;
+
+    private final transient int totalNumberOfWarmShards; // Transient ? not serializable anyway?
+    private final transient int totalNumberOfHotShards; // Transient ? not serializable anyway?
+    private final transient int totalNumberOfPrimaryShards; // Transient ? not serializable anyway?
+    private final int totalOpenLocalOnlyIndexShards;
+    private final int totalOpenRemoteCapableIndexShards;
 
     private final String[] allIndices;
     private final String[] visibleIndices;
@@ -315,15 +327,43 @@ public class Metadata implements Iterable<IndexMetadata>, Diffable<Metadata>, To
         this.customs = Collections.unmodifiableMap(customs);
         this.templates = new TemplatesMetadata(templates);
         int totalNumberOfShards = 0;
-        int totalOpenIndexShards = 0;
+        int totalWarmShards = 0;
+        int totalHotShards = 0;
+        int totalPrimaryShards = 0;
+        int totalOpenLocalOnlyIndexShards = 0;
+        int totalOpenRemoteCapableIndexShards = 0;
         for (IndexMetadata cursor : indices.values()) {
             totalNumberOfShards += cursor.getTotalNumberOfShards();
             if (IndexMetadata.State.OPEN.equals(cursor.getState())) {
-                totalOpenIndexShards += cursor.getTotalNumberOfShards();
+                if (RoutingPool.getIndexPool(cursor) == RoutingPool.REMOTE_CAPABLE) {
+                    totalOpenRemoteCapableIndexShards += cursor.getTotalNumberOfShards();
+                } else {
+                    totalOpenLocalOnlyIndexShards += cursor.getTotalNumberOfShards();
+                }
+            }
+
+            Settings settings = cursor.getSettings();
+            String indexBoxTypeSetting = settings.get(INDEX_BOX_TYPE_SETTING_KEY, HOT_BOX_TYPE);
+            String indexMigrationState = settings.get(IndexModule.INDEX_MIGRATION_STATE.getKey(), IndexType.MigrationState.HOT.toString()).toUpperCase();
+            // Hot to warm migrating index which is in RUNNING_SHARD_RELOCATION state (determined by migration state and box_type setting) and shard is assigned
+            // to a warm node. All shards of these index will be considered warm.
+            // Also, warm to hot migrating index whose shards are on warm node should be counted as warm shards, but in this case
+            // we would avoid counting it here as it needs to know assigned box type from routing table. Hence, this count which would be
+            // used in load-awareness decider, it would include hot shards which are yet to be fully migrated
+            if ((IndexType.MigrationState.WARM.toString().equals(indexMigrationState)) ||
+                (IndexType.MigrationState.HOT2WARM.toString().equals(indexMigrationState) && WARM_BOX_TYPE.equals(indexBoxTypeSetting))) {
+                totalWarmShards += cursor.getTotalNumberOfShards();
+            } else if (UltrawarmShardUtils.isHotIndex(settings)) {
+                totalHotShards += cursor.getTotalNumberOfShards();
+                totalPrimaryShards += cursor.getNumberOfShards();
             }
         }
         this.totalNumberOfShards = totalNumberOfShards;
-        this.totalOpenIndexShards = totalOpenIndexShards;
+        this.totalNumberOfWarmShards = totalWarmShards;
+        this.totalNumberOfHotShards = totalHotShards;
+        this.totalNumberOfPrimaryShards = totalPrimaryShards;
+        this.totalOpenLocalOnlyIndexShards = totalOpenLocalOnlyIndexShards;
+        this.totalOpenRemoteCapableIndexShards = totalOpenRemoteCapableIndexShards;
 
         this.allIndices = allIndices;
         this.visibleIndices = visibleIndices;
@@ -900,12 +940,45 @@ public class Metadata implements Iterable<IndexMetadata>, Diffable<Metadata>, To
     }
 
     /**
+     * Gets the total number of warm shards from all indices
+     * @return The total number shards of warm shards to be used in load-awareness decider.
+     */
+    public int getTotalNumberOfWarmShards() {
+        return this.totalNumberOfWarmShards;
+    }
+
+    /**
+     * Gets the total number of hot shards from all indices
+     * @return The total number shards of hot shards to be used in load-awareness decider.
+     */
+    public int getTotalNumberOfHotShards() {
+        return this.totalNumberOfHotShards;
+    }
+
+    /**
+     * Gets the total number of primary shards from all indices
+     * @return The total number shards of primary shards to be used in load-awareness decider.
+     */
+    public int getTotalNumberOfPrimaryShards() {
+        return this.totalNumberOfPrimaryShards;
+    }
+
+    /**
      * Gets the total number of open shards from all indices. Includes
      * replicas, but does not include shards that are part of closed indices.
      * @return The total number of open shards from all indices.
      */
     public int getTotalOpenIndexShards() {
-        return this.totalOpenIndexShards;
+        return this.totalOpenLocalOnlyIndexShards;
+    }
+
+    /**
+     * Gets the total number of open remote capable shards from all indices. Includes
+     * replicas, but does not include shards that are part of closed indices.
+     * @return The total number of open shards from all indices.
+     */
+    public int getTotalOpenRemoteCapableIndexShards() {
+        return this.totalOpenRemoteCapableIndexShards;
     }
 
     /**
@@ -1611,9 +1684,9 @@ public class Metadata implements Iterable<IndexMetadata>, Diffable<Metadata>, To
         private void buildSystemTemplatesLookup() {
             if (previousMetadata != null
                 && Objects.equals(
-                    previousMetadata.customs.get(ComponentTemplateMetadata.TYPE),
-                    this.customs.get(ComponentTemplateMetadata.TYPE)
-                )) {
+                previousMetadata.customs.get(ComponentTemplateMetadata.TYPE),
+                this.customs.get(ComponentTemplateMetadata.TYPE)
+            )) {
                 systemTemplatesLookup = Collections.unmodifiableMap(previousMetadata.systemTemplatesLookup);
             } else {
                 systemTemplatesLookup = new HashMap<>();

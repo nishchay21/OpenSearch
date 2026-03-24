@@ -219,6 +219,7 @@ import org.opensearch.plugins.ClusterPlugin;
 import org.opensearch.plugins.CryptoKeyProviderPlugin;
 import org.opensearch.plugins.CryptoPlugin;
 import org.opensearch.plugins.SearchEnginePlugin;
+import org.opensearch.vectorized.execution.jni.NativeObjectStoreProvider;
 import org.opensearch.plugins.DataSourcePlugin;
 import org.opensearch.plugins.DiscoveryPlugin;
 import org.opensearch.plugins.EnginePlugin;
@@ -939,12 +940,25 @@ public class Node implements Closeable {
             final Map<String, org.opensearch.index.store.CompositeStoreDirectoryFactory> compositeStoreDirectoryFactories = new HashMap<>();
             pluginsService.filterPlugins(IndexStorePlugin.class)
                 .stream()
-                .forEach(plugin -> {
-                    // Check if plugin implements getCompositeStoreDirectoryFactories method
-                    // For now, we'll add empty collection and rely on default factory
+                .flatMap(plugin -> plugin.getCompositeStoreDirectoryFactories().entrySet().stream())
+                .forEach(entry -> {
+                    if (compositeStoreDirectoryFactories.put(entry.getKey(), entry.getValue()) != null) {
+                        throw new IllegalStateException("Duplicate CompositeStoreDirectoryFactory key: " + entry.getKey());
+                    }
                 });
             // Register default factory
             compositeStoreDirectoryFactories.put("default", new org.opensearch.index.store.DefaultCompositeStoreDirectoryFactory());
+
+            // Collect CachedCompositeStoreDirectoryFactories from plugins (receives FileCache at shard creation)
+            final Map<String, org.opensearch.index.store.CachedCompositeStoreDirectoryFactory> cachedCompositeStoreDirectoryFactories = new HashMap<>();
+            pluginsService.filterPlugins(IndexStorePlugin.class)
+                .stream()
+                .flatMap(plugin -> plugin.getCachedCompositeStoreDirectoryFactories().entrySet().stream())
+                .forEach(entry -> {
+                    if (cachedCompositeStoreDirectoryFactories.put(entry.getKey(), entry.getValue()) != null) {
+                        throw new IllegalStateException("Duplicate CachedCompositeStoreDirectoryFactory key: " + entry.getKey());
+                    }
+                });
 
             final Map<String, IndexStorePlugin.RecoveryStateFactory> recoveryStateFactories = pluginsService.filterPlugins(
                 IndexStorePlugin.class
@@ -1013,6 +1027,7 @@ public class Node implements Closeable {
                 Map.copyOf(directoryFactories),
                 Map.copyOf(compositeDirectoryFactories),
                 Map.copyOf(compositeStoreDirectoryFactories),
+                Map.copyOf(cachedCompositeStoreDirectoryFactories),
                 searchModule.getValuesSourceRegistry(),
                 recoveryStateFactories,
                 storeFactories,
@@ -1140,6 +1155,12 @@ public class Node implements Closeable {
 
             // TODO : compilation issue
 
+            // Discover NativeObjectStoreProvider from plugins (e.g. TieredStoragePlugin)
+            NativeObjectStoreProvider nativeObjectStoreProvider = pluginsService.filterPlugins(NativeObjectStoreProvider.class)
+                .stream()
+                .findFirst()
+                .orElse(null);
+
             Collection<Object> dataSourceAwareComponents = pluginsService.filterPlugins(SearchEnginePlugin.class)
                 .stream()
                 .flatMap(
@@ -1155,7 +1176,8 @@ public class Node implements Closeable {
                         namedWriteableRegistry,
                         clusterModule.getIndexNameExpressionResolver(),
                         repositoriesServiceReference::get,
-                        dataSourceCodecMap
+                        dataSourceCodecMap,
+                        nativeObjectStoreProvider
                     ).stream()
                 )
                 .collect(Collectors.toList());

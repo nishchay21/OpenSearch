@@ -36,6 +36,7 @@ import org.opensearch.datafusion.search.DatafusionSearcher;
 import org.opensearch.datafusion.search.cache.CacheSettings;
 import org.opensearch.env.Environment;
 import org.opensearch.env.NodeEnvironment;
+import org.opensearch.index.IndexSettings;
 import org.opensearch.index.shard.ShardPath;
 import org.opensearch.plugins.spi.vectorized.DataFormat;
 import org.opensearch.plugins.spi.vectorized.DataSourceCodec;
@@ -51,6 +52,7 @@ import org.opensearch.rest.RestHandler;
 import org.opensearch.script.ScriptService;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.client.Client;
+import org.opensearch.vectorized.execution.jni.NativeObjectStoreProvider;
 import org.opensearch.vectorized.execution.search.spi.RecordBatchStream;
 import org.opensearch.watcher.ResourceWatcherService;
 
@@ -86,18 +88,6 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEngi
 
     /**
      * Creates components for the DataFusion plugin.
-     * @param client The client instance.
-     * @param clusterService The cluster service instance.
-     * @param threadPool The thread pool instance.
-     * @param resourceWatcherService The resource watcher service instance.
-     * @param scriptService The script service instance.
-     * @param xContentRegistry The named XContent registry.
-     * @param environment The environment instance.
-     * @param nodeEnvironment The node environment instance.
-     * @param namedWriteableRegistry The named writeable registry.
-     * @param indexNameExpressionResolver The index name expression resolver instance.
-     * @param repositoriesServiceSupplier The supplier for the repositories service.
-     * @return Collection of created components
      */
     @Override
     public Collection<Object> createComponents(
@@ -112,18 +102,27 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEngi
         NamedWriteableRegistry namedWriteableRegistry,
         IndexNameExpressionResolver indexNameExpressionResolver,
         Supplier<RepositoriesService> repositoriesServiceSupplier,
-        Map<DataFormat, DataSourceCodec> dataSourceCodecs
+        Map<DataFormat, DataSourceCodec> dataSourceCodecs,
+        NativeObjectStoreProvider nativeObjectStoreProvider
     ) {
         String spill_dir = Arrays.stream(environment.dataFiles()).findFirst().get().getParent().resolve("tmp").toAbsolutePath().toString();
         if (!isDataFusionEnabled) {
             return Collections.emptyList();
         }
+
+        // Create runtime WITHOUT the ObjectStore first — it will be registered lazily
+        // when the first shard is created (at which point RepositoriesService is available
+        // and TieredStoragePlugin can resolve the repo root path).
         dataFusionService = new DataFusionService(dataSourceCodecs, clusterService, spill_dir);
+
+        // Store the provider for lazy ObjectStore registration
+        if (nativeObjectStoreProvider != null) {
+            dataFusionService.setNativeObjectStoreProvider(nativeObjectStoreProvider);
+        }
 
         for(DataFormat format : this.getSupportedFormats()) {
             dataSourceCodecs.get(format);
         }
-        // return Collections.emptyList();
         return Collections.singletonList(dataFusionService);
     }
 
@@ -141,7 +140,15 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEngi
     public SearchExecEngine<DatafusionContext, DatafusionSearcher,
             DatafusionReaderManager, DatafusionQuery>
         createEngine(DataFormat dataFormat,Collection<FileMetadata> formatCatalogSnapshot, ShardPath shardPath) throws IOException {
-        return new DatafusionEngine(dataFormat, formatCatalogSnapshot, dataFusionService, shardPath);
+        return new DatafusionEngine(dataFormat, formatCatalogSnapshot, dataFusionService, shardPath, false);
+    }
+
+    @Override
+    public SearchExecEngine<DatafusionContext, DatafusionSearcher,
+            DatafusionReaderManager, DatafusionQuery>
+        createEngine(DataFormat dataFormat, Collection<FileMetadata> formatCatalogSnapshot, ShardPath shardPath, IndexSettings indexSettings) throws IOException {
+        boolean useObjectStore = indexSettings.isOptimizedIndex() && indexSettings.isWarmIndex();
+        return new DatafusionEngine(dataFormat, formatCatalogSnapshot, dataFusionService, shardPath, useObjectStore);
     }
 
     /**

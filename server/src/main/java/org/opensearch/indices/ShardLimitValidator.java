@@ -35,6 +35,7 @@ package org.opensearch.indices;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.DataStream;
 import org.opensearch.cluster.metadata.IndexMetadata;
+import org.opensearch.cluster.routing.RoutingPool;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.ValidationException;
 import org.opensearch.common.settings.Setting;
@@ -89,14 +90,36 @@ public class ShardLimitValidator {
         Setting.Property.NodeScope
     );
 
+    public static final Setting<Integer> SETTING_CLUSTER_MAX_REMOTE_CAPABLE_SHARDS_PER_NODE = Setting.intSetting(
+        "cluster.max_remote_capable_shards_per_node",
+        1000,
+        1,
+        new MaxRemoteCapableShardPerNodeLimitValidator(),
+        Setting.Property.Dynamic,
+        Setting.Property.NodeScope
+    );
+
+    public static final Setting<Integer> SETTING_CLUSTER_MAX_REMOTE_CAPABLE_SHARDS_PER_CLUSTER = Setting.intSetting(
+        "cluster.routing.allocation.total_remote_capable_shards_limit",
+        -1,
+        -1,
+        new MaxRemoteCapableShardPerClusterLimitValidator(),
+        Setting.Property.Dynamic,
+        Setting.Property.NodeScope
+    );
+
     protected final AtomicInteger shardLimitPerNode = new AtomicInteger();
     protected final AtomicInteger shardLimitPerCluster = new AtomicInteger();
+    protected final AtomicInteger remoteCapableShardLimitPerNode = new AtomicInteger();
+    protected final AtomicInteger remoteCapableShardLimitPerCluster = new AtomicInteger();
     private final SystemIndices systemIndices;
     private volatile boolean ignoreDotIndexes;
 
     public ShardLimitValidator(final Settings settings, ClusterService clusterService, SystemIndices systemIndices) {
         this.shardLimitPerNode.set(SETTING_CLUSTER_MAX_SHARDS_PER_NODE.get(settings));
         this.shardLimitPerCluster.set(SETTING_CLUSTER_MAX_SHARDS_PER_CLUSTER.get(settings));
+        this.remoteCapableShardLimitPerNode.set(SETTING_CLUSTER_MAX_REMOTE_CAPABLE_SHARDS_PER_NODE.get(settings));
+        this.remoteCapableShardLimitPerCluster.set(SETTING_CLUSTER_MAX_REMOTE_CAPABLE_SHARDS_PER_CLUSTER.get(settings));
         this.ignoreDotIndexes = SETTING_CLUSTER_IGNORE_DOT_INDEXES.get(settings);
         clusterService.getClusterSettings().addSettingsUpdateConsumer(SETTING_CLUSTER_MAX_SHARDS_PER_NODE, this::setShardLimitPerNode);
         clusterService.getClusterSettings()
@@ -119,6 +142,22 @@ public class ShardLimitValidator {
      */
     public int getShardLimitPerNode() {
         return shardLimitPerNode.get();
+    }
+
+    /**
+     * Gets the currently configured value of the {@link ShardLimitValidator#SETTING_CLUSTER_MAX_REMOTE_CAPABLE_SHARDS_PER_NODE} setting.
+     * @return the current value of the setting
+     */
+    public int getRemoteCapableShardLimitPerNode() {
+        return remoteCapableShardLimitPerNode.get();
+    }
+
+    /**
+     * Gets the currently configured value of the {@link ShardLimitValidator#SETTING_CLUSTER_MAX_REMOTE_CAPABLE_SHARDS_PER_CLUSTER} setting.
+     * @return the current value of the setting.
+     */
+    public int getRemoteCapableShardLimitPerCluster() {
+        return remoteCapableShardLimitPerCluster.get();
     }
 
     /**
@@ -246,6 +285,75 @@ public class ShardLimitValidator {
         return checkShardLimit(newShards, state, getShardLimitPerNode(), getShardLimitPerCluster());
     }
 
+    /**
+     * Checks to see if an operation can be performed without taking the cluster over the cluster-wide shard limit.
+     * Returns an error message if appropriate, or an empty {@link Optional} otherwise.
+     *
+     * @param newShards         The number of shards to be added by this operation
+     * @param state             The current cluster state
+     * @return If present, an error message to be given as the reason for failing
+     * an operation. If empty, a sign that the operation is valid.
+     */
+    public Optional<String> checkShardLimit(int newShards, ClusterState state, RoutingPool shardPool) {
+        return shardPool == RoutingPool.REMOTE_CAPABLE
+            ? checkShardLimit(
+            newShards,
+            state.getMetadata().getTotalOpenRemoteCapableIndexShards(),
+            getRemoteCapableShardLimitPerNode(),
+            getRemoteCapableShardLimitPerCluster(),
+            state.getNodes().getWarmNodes().size(),
+            shardPool
+        )
+            : checkShardLimit(
+            newShards,
+            state.getMetadata().getTotalOpenIndexShards(),
+            getShardLimitPerNode(),
+            getShardLimitPerCluster(),
+            state.getNodes().getDataNodes().size(),
+            shardPool
+        );
+    }
+
+    // package-private for testing
+    static Optional<String> checkShardLimit(
+        int newShards,
+        long currentOpenShards,
+        int maxShardsPerNodeSetting,
+        int maxShardsPerClusterSetting,
+        int nodeCount,
+        RoutingPool shardPool
+    ) {
+        // Only enforce the shard limit if we have at least one data node, so that we don't block
+        // index creation during cluster setup
+        if (nodeCount == 0 || newShards < 0) {
+            return Optional.empty();
+        }
+
+        int computedMaxShards = (int) Math.min(Integer.MAX_VALUE, (long) maxShardsPerNodeSetting * nodeCount);
+        int maxShardsInCluster = maxShardsPerClusterSetting;
+        if (maxShardsInCluster == -1) {
+            maxShardsInCluster = computedMaxShards;
+        } else {
+            maxShardsInCluster = Math.min(maxShardsInCluster, computedMaxShards);
+        }
+
+        if ((currentOpenShards + newShards) > maxShardsInCluster) {
+            String errorMessage = "this action would add ["
+                + newShards
+                + "] total "
+                + shardPool
+                + " shards, but this cluster currently has ["
+                + currentOpenShards
+                + "]/["
+                + maxShardsInCluster
+                + "] maximum "
+                + shardPool
+                + " shards open";
+            return Optional.of(errorMessage);
+        }
+        return Optional.empty();
+    }
+
     // package-private for testing
     static Optional<String> checkShardLimit(
         int newShards,
@@ -303,6 +411,49 @@ public class ShardLimitValidator {
             return settings.iterator();
         }
     }
+
+    /**
+     * Validates the MaxShadPerCluster threshold.
+     */
+    static final class MaxRemoteCapableShardPerClusterLimitValidator implements Setting.Validator<Integer> {
+
+        @Override
+        public void validate(Integer value) {}
+
+        @Override
+        public void validate(Integer maxShardPerCluster, Map<Setting<?>, Object> settings) {
+            final int maxShardPerNode = (int) settings.get(SETTING_CLUSTER_MAX_REMOTE_CAPABLE_SHARDS_PER_NODE);
+            doValidate(maxShardPerCluster, maxShardPerNode);
+        }
+
+        @Override
+        public Iterator<Setting<?>> settings() {
+            final List<Setting<?>> settings = Collections.singletonList(SETTING_CLUSTER_MAX_REMOTE_CAPABLE_SHARDS_PER_NODE);
+            return settings.iterator();
+        }
+    }
+
+    /**
+     * Validates the MaxShadPerNode threshold.
+     */
+    static final class MaxRemoteCapableShardPerNodeLimitValidator implements Setting.Validator<Integer> {
+
+        @Override
+        public void validate(Integer value) {}
+
+        @Override
+        public void validate(Integer maxShardPerNode, Map<Setting<?>, Object> settings) {
+            final int maxShardPerCluster = (int) settings.get(SETTING_CLUSTER_MAX_REMOTE_CAPABLE_SHARDS_PER_CLUSTER);
+            doValidate(maxShardPerCluster, maxShardPerNode);
+        }
+
+        @Override
+        public Iterator<Setting<?>> settings() {
+            final List<Setting<?>> settings = Collections.singletonList(SETTING_CLUSTER_MAX_REMOTE_CAPABLE_SHARDS_PER_CLUSTER);
+            return settings.iterator();
+        }
+    }
+
 
     /**
      * Validates the MaxShadPerNode threshold.

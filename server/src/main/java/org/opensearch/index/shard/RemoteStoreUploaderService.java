@@ -18,6 +18,7 @@ import org.opensearch.common.logging.Loggers;
 import org.opensearch.common.util.UploadListener;
 import org.opensearch.core.action.ActionListener;
 import org.opensearch.index.engine.exec.FileMetadata;
+import org.opensearch.index.store.RemoteSyncAware;
 import org.opensearch.index.store.SegmentUploadFailedException;
 import org.opensearch.index.store.RemoteSegmentStoreDirectory;
 
@@ -61,6 +62,12 @@ public class RemoteStoreUploaderService implements RemoteStoreUploader {
             return;
         }
 
+        // Register local files in the registry before upload — needed because
+        // some formats (e.g. Parquet) write via native JNI bypassing createOutput()
+        if (storeDirectory instanceof RemoteSyncAware) {
+            ((RemoteSyncAware) storeDirectory).beforeSyncToRemote(fileMetadataCollection);
+        }
+
         // Log format-aware upload statistics
         Map<String, Long> formatCounts = fileMetadataCollection.stream()
             .collect(Collectors.groupingBy(
@@ -91,6 +98,13 @@ public class RemoteStoreUploaderService implements RemoteStoreUploader {
                 long fileSize = fileMetadataSizeMap.getOrDefault(fileMetadata, 0L);
                 logger.debug("Format-aware upload completed: file={}, format={}, size={} bytes",
                             fileName, fileMetadata.dataFormat(), fileSize);
+
+                // Notify the store directory that the file has been synced to remote.
+                // RemoteSyncAware.afterSyncToRemote() updates the FileRegistry
+                // so it knows the file now exists on remote (for cache eviction decisions).
+                if (storeDirectory instanceof RemoteSyncAware) {
+                    ((RemoteSyncAware) storeDirectory).afterSyncToRemote(fileName, fileMetadata.serialize());
+                }
 
                 // Once uploaded to Remote, local files become eligible for eviction from FileCache
                 // Todo:@Kamal Update compositeDirectory for ultrawarm support

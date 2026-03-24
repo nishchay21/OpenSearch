@@ -96,7 +96,9 @@ import org.opensearch.index.shard.ShardNotInPrimaryModeException;
 import org.opensearch.index.shard.ShardPath;
 import org.opensearch.index.similarity.SimilarityService;
 import org.opensearch.index.store.CompositeStoreDirectory;
+import org.opensearch.index.store.CachedCompositeStoreDirectoryFactory;
 import org.opensearch.index.store.CompositeStoreDirectoryFactory;
+import org.opensearch.index.store.CompositeRemoteSegmentStoreDirectory;
 import org.opensearch.index.store.RemoteSegmentStoreDirectoryFactory;
 import org.opensearch.index.store.Store;
 import org.opensearch.index.store.remote.filecache.FileCache;
@@ -162,6 +164,7 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
     private final IndexStorePlugin.DirectoryFactory directoryFactory;
     private final IndexStorePlugin.CompositeDirectoryFactory compositeDirectoryFactory;
     private final CompositeStoreDirectoryFactory compositeStoreDirectoryFactory;
+    private final CachedCompositeStoreDirectoryFactory cachedCompositeStoreDirectoryFactory;
     private final IndexStorePlugin.DirectoryFactory remoteDirectoryFactory;
     private final IndexStorePlugin.RecoveryStateFactory recoveryStateFactory;
     private final CheckedFunction<DirectoryReader, DirectoryReader, IOException> readerWrapper;
@@ -263,7 +266,8 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
         Supplier<Integer> clusterDefaultMaxMergeAtOnceSupplier,
         SearchEnginePlugin searchEnginePlugin,
         PluginsService pluginsService,
-        CompositeStoreDirectoryFactory compositeStoreDirectoryFactory
+        CompositeStoreDirectoryFactory compositeStoreDirectoryFactory,
+        CachedCompositeStoreDirectoryFactory cachedCompositeStoreDirectoryFactory
     ) {
         super(indexSettings);
         this.storeFactory = storeFactory;
@@ -333,6 +337,7 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
         this.directoryFactory = directoryFactory;
         this.compositeDirectoryFactory = compositeDirectoryFactory;
         this.compositeStoreDirectoryFactory = compositeStoreDirectoryFactory;
+        this.cachedCompositeStoreDirectoryFactory = cachedCompositeStoreDirectoryFactory;
         this.remoteDirectoryFactory = remoteDirectoryFactory;
         this.recoveryStateFactory = recoveryStateFactory;
         this.engineFactory = Objects.requireNonNull(engineFactory);
@@ -464,6 +469,7 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
             clusterDefaultMaxMergeAtOnce,
             searchEnginePlugin,
             pluginsService,
+            null,
             null
         );
     }
@@ -739,7 +745,7 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
                     }
                 };
                 CompositeStoreDirectory remoteCompositeStoreDirectory = this.indexSettings.isOptimizedIndex()
-                    ? createCompositeStoreDirectory(shardId, path)
+                    ? createCompositeStoreDirectory(shardId, path, remoteDirectory)
                     : null;
                 remoteStore = new Store(shardId, this.indexSettings, remoteDirectory, remoteStoreLock, Store.OnClose.EMPTY, path, remoteCompositeStoreDirectory);
             } else {
@@ -756,24 +762,32 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
             }
 
             Directory directory;
-            if (FeatureFlags.isEnabled(FeatureFlags.WRITABLE_WARM_INDEX_SETTING) &&
-            // TODO : Need to remove this check after support for hot indices is added in Composite Directory
-                this.indexSettings.isWarmIndex()) {
-                directory = compositeDirectoryFactory.newDirectory(
-                    this.indexSettings,
-                    path,
-                    directoryFactory,
-                    remoteDirectory,
-                    fileCache,
-                    threadPool
-                );
+            CompositeStoreDirectory compositeStoreDirectory = this.indexSettings.isOptimizedIndex()
+                ? createCompositeStoreDirectory(shardId, path, remoteDirectory)
+                : null;
+
+            if (FeatureFlags.isEnabled(FeatureFlags.WRITABLE_WARM_INDEX_SETTING)
+                    && this.indexSettings.isWarmIndex()) {
+                if (compositeStoreDirectory != null) {
+                    // Optimized + warm: use FSDirectory as the main store directory so that
+                    // Lucene writes (segments_N, corrupted_*) go through native IndexOutput
+                    // with checksum support. The TieredCompositeStoreDirectory is passed
+                    // separately to Store for format-aware operations.
+                    directory = directoryFactory.newDirectory(this.indexSettings, path);
+                } else {
+                    // Non-optimized warm: use TieredDirectory with file cache
+                    directory = compositeDirectoryFactory.newDirectory(
+                        this.indexSettings,
+                        path,
+                        directoryFactory,
+                        remoteDirectory,
+                        fileCache,
+                        threadPool
+                    );
+                }
             } else {
                 directory = directoryFactory.newDirectory(this.indexSettings, path);
             }
-
-            CompositeStoreDirectory compositeStoreDirectory = this.indexSettings.isOptimizedIndex()
-                ? createCompositeStoreDirectory(shardId, path)
-                : null;
 
             store = new Store(
                 shardId,
@@ -1366,8 +1380,41 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
     /**
      * Creates CompositeStoreDirectory using the factory if available, otherwise fallback to Store's internal creation.
      * This method centralizes the directory creation logic and enables plugin-based format discovery.
+     * <p>
+     * For optimized indices with a cached factory, the cached factory is preferred — it wraps each
+     * FormatStoreDirectory with CachedFormatStoreDirectory for per-format caching.
+     *
+     * @param shardId        the shard identifier
+     * @param shardPath      the shard path
+     * @param remoteDirectory the remote directory (may be CompositeRemoteSegmentStoreDirectory for optimized indices)
      */
-    private CompositeStoreDirectory createCompositeStoreDirectory(ShardId shardId, ShardPath shardPath) throws IOException {
+    private CompositeStoreDirectory createCompositeStoreDirectory(
+        ShardId shardId,
+        ShardPath shardPath,
+        Directory remoteDirectory
+    ) throws IOException {
+        // Use cached factory (TieredCompositeStoreDirectory) only for optimized+warm indices.
+        // Hot optimized indices use the regular CompositeStoreDirectory — no registry, no eviction.
+        if (cachedCompositeStoreDirectoryFactory != null
+            && indexSettings.isOptimizedIndex()
+            && indexSettings.isWarmIndex()) {
+            CompositeRemoteSegmentStoreDirectory compositeRemoteDir =
+                (remoteDirectory instanceof CompositeRemoteSegmentStoreDirectory)
+                    ? (CompositeRemoteSegmentStoreDirectory) remoteDirectory
+                    : null;
+            logger.debug("Using CachedCompositeStoreDirectoryFactory for shard={}, remoteDir={}",
+                shardId, compositeRemoteDir != null ? "present" : "null");
+            return cachedCompositeStoreDirectoryFactory.newDirectory(
+                indexSettings,
+                shardId,
+                shardPath,
+                pluginsService,
+                fileCache,
+                compositeRemoteDir
+            );
+        }
+
+        // Fall back to non-cached factory
         if (compositeStoreDirectoryFactory != null) {
             logger.debug("Using CompositeStoreDirectoryFactory to create directory for shard path: {}", shardPath);
             return compositeStoreDirectoryFactory.newCompositeStoreDirectory(

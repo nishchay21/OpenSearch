@@ -1,0 +1,130 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * The OpenSearch Contributors require contributions made to
+ * this file be licensed under the Apache-2.0 license or a
+ * compatible open source license.
+ *
+ * Modifications Copyright OpenSearch Contributors. See
+ * GitHub history for details.
+ */
+
+/*
+ * Licensed to Elasticsearch under one or more contributor
+ * license agreements. See the NOTICE file distributed with
+ * this work for additional information regarding copyright
+ * ownership. Elasticsearch licenses this file to you under
+ * the Apache License, Version 2.0 (the "License"); you may
+ * not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *         http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+
+import org.opensearch.gradle.test.InternalClusterTestPlugin
+import org.opensearch.gradle.test.RestIntegTestTask
+
+apply plugin: 'opensearch.build'
+apply plugin: 'opensearch.java-rest-test'
+apply plugin: 'opensearch.publish'
+apply plugin: 'opensearch.yaml-rest-test'
+apply plugin: 'opensearch.internal-cluster-test'
+apply plugin: 'opensearch.opensearchplugin'
+
+opensearchplugin {
+  description = 'Writable warm.'
+  classname = 'org.opensearch.storage.TieredStoragePlugin'
+}
+
+dependencies {
+  api project(':libs:opensearch-vectorized-exec-spi')
+  testImplementation project(":libs:opensearch-plugin-classloader")
+}
+
+restResources {
+  restApi {
+    includeCore '_common', 'cluster', 'nodes','indices', 'index'
+  }
+}
+
+bundlePlugin {
+  from('config/tiered-storage') {
+    into 'config'
+  }
+}
+
+tasks.named('loggerUsageCheck').configure {
+  enabled = false
+}
+
+tasks.named('test').configure {
+    include '**/*Tests.class'
+    include '**/*Test.class'
+    include '**/*IT.class'
+}
+
+compileTestJava {
+  options.compilerArgs.remove('-Werror')
+  options.warnings = false
+}
+
+task testJar(type: Jar) {
+ archiveClassifier = 'test'
+ from sourceSets.test.output
+ from sourceSets.internalClusterTest.output
+}
+
+artifacts {
+ archives testJar
+}
+
+assemble.dependsOn testJar
+
+// Disable specific license tasks
+licenseHeaders.enabled = false
+
+// ── Rust native library build ──────────────────────────────────────────────────
+def rustBuildType = project.hasProperty('rustDebug') ? 'debug' : 'release'
+
+// DEPRECATED: Rust code moved to plugins/engine-datafusion/jni/src/tiered/
+// The tiered-storage .so is no longer built — all native code lives in
+// libopensearch_datafusion_jni to avoid cross-.so allocator mismatch (SIGSEGV).
+// These tasks are kept as no-ops to avoid breaking the build chain.
+
+task buildRustLibrary {
+    description = 'DEPRECATED — tiered-storage Rust code moved to DataFusion .so'
+    group = 'build'
+    // no-op
+}
+
+task copyNativeLibrary {
+    description = 'DEPRECATED — tiered-storage native lib no longer built separately'
+    group = 'build'
+    dependsOn buildRustLibrary
+    // no-op
+}
+
+compileJava.dependsOn copyNativeLibrary
+processResources.dependsOn copyNativeLibrary
+
+tasks.named('filepermissions').configure {
+    dependsOn copyNativeLibrary
+}
+
+tasks.named("forbiddenPatterns").configure {
+    dependsOn copyNativeLibrary
+    exclude '**/native/**'
+}
+
+clean {
+    delete file("${rootProject.projectDir}/target")
+    delete file('src/main/resources/native')
+}

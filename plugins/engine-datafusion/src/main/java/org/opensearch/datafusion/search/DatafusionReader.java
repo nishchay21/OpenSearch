@@ -67,7 +67,8 @@ public class DatafusionReader implements Closeable {
     public DatafusionReader(
         String directoryPath,
         CompositeEngine.ReleasableRef<CatalogSnapshot> catalogSnapshotRef,
-        Collection<WriterFileSet> files
+        Collection<WriterFileSet> files,
+        long runtimePtr
     ) {
         this.directoryPath = directoryPath;
         this.catalogSnapshotRef = catalogSnapshotRef;
@@ -79,7 +80,7 @@ public class DatafusionReader implements Closeable {
         }
         System.out.println("File names: " + Arrays.toString(fileNames));
         System.out.println("Directory path: " + directoryPath);
-        this.readerHandle = new ReaderHandle(directoryPath, fileNames, this::releaseCatalogSnapshot);
+        this.readerHandle = new ReaderHandle(directoryPath, fileNames, runtimePtr, this::releaseCatalogSnapshot);
     }
 
     /**

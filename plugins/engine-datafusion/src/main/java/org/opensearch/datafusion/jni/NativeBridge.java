@@ -10,6 +10,8 @@ package org.opensearch.datafusion.jni;
 
 import org.opensearch.core.action.ActionListener;
 import org.opensearch.index.engine.exec.FileStats;
+import org.opensearch.vectorized.execution.jni.SharedNativeLibrary;
+import org.opensearch.vectorized.execution.jni.TieredStoreNativeBridge;
 
 import java.util.Map;
 
@@ -22,12 +24,19 @@ public final class NativeBridge {
     static {
         NativeLibraryLoader.load("opensearch_datafusion_jni");
         initLogger();
+        // Register the tiered storage bridge so other plugins can call
+        // tiered-storage native methods through this classloader's .so
+        SharedNativeLibrary.register(
+            TieredStoreNativeBridge.REGISTRY_KEY,
+            new TieredStoreNativeBridgeImpl()
+        );
     }
 
     private NativeBridge() {}
 
     // Runtime management
     public static native long createGlobalRuntime(long limit, long cacheManagerPtr, String spillDir, long spillLimit);
+    public static native long createGlobalRuntimeWithTieredStore(long limit, long cacheManagerPtr, String spillDir, long spillLimit, long objStoreDataPtr, long objStoreVtablePtr);
     public static native void closeGlobalRuntime(long ptr);
 
     // Tokio runtime
@@ -65,8 +74,19 @@ public final class NativeBridge {
 
 
     // Reader management
-    public static native long createDatafusionReader(String path, String[] files);
+    public static native long createDatafusionReader(String path, String[] files, long runtimePtr);
     public static native void closeDatafusionReader(long ptr);
+
+    /**
+     * Register a TieredObjectStore into an existing DataFusion runtime for the file:// scheme.
+     * Called per-shard after the TieredObjectStore is created, so DataFusion reads go through
+     * the tiered storage path (remote reads via the Rust ObjectStore).
+     *
+     * @param runtimePtr the DataFusion runtime pointer
+     * @param objStoreDataPtr data component of the native fat pointer to Arc&lt;dyn ObjectStore&gt;
+     * @param objStoreVtablePtr vtable component of the native fat pointer
+     */
+    public static native void registerObjectStore(long runtimePtr, long objStoreDataPtr, long objStoreVtablePtr);
 
     // Memory monitoring
     public static native void printMemoryPoolAllocation(long runtimePtr);

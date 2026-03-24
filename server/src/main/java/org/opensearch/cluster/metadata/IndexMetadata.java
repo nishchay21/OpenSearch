@@ -156,6 +156,14 @@ public class IndexMetadata implements Diffable<IndexMetadata>, ToXContentFragmen
         EnumSet.of(ClusterBlockLevel.METADATA_WRITE, ClusterBlockLevel.WRITE)
     );
 
+    public static final Setting<String> INDEX_ROUTING_SEARCH_PREFERENCE = Setting.simpleString(
+        "index.routing.search_preference",
+        Property.Dynamic,
+        Property.IndexScope
+    );
+
+
+
     public static final ClusterBlock REMOTE_READ_ONLY_ALLOW_DELETE = new ClusterBlock(
         13,
         "remote index is read-only",
@@ -645,6 +653,21 @@ public class IndexMetadata implements Diffable<IndexMetadata>, ToXContentFragmen
 
     public static final String SETTING_READ_ONLY_ALLOW_DELETE = APIBlock.READ_ONLY_ALLOW_DELETE.settingName();
     public static final Setting<Boolean> INDEX_BLOCKS_READ_ONLY_ALLOW_DELETE_SETTING = APIBlock.READ_ONLY_ALLOW_DELETE.setting();
+    public static final String SETTING_ULTRAWARM_ALLOW_DELETE = "index.blocks.ultrawarm_allow_delete";
+    public static final Setting<Boolean> INDEX_BLOCKS_ULTRAWARM_ALLOW_DELETE_SETTING = Setting.boolSetting(
+        SETTING_ULTRAWARM_ALLOW_DELETE,
+        false,
+        Property.Dynamic,
+        Property.IndexScope
+    );
+
+    public static final String SETTING_LEVIATHAN_READ_ONLY = "index.blocks.leviathan_read_only";
+    public static final Setting<Boolean> INDEX_BLOCKS_LEVIATHAN_READ_ONLY_SETTING = Setting.boolSetting(
+        SETTING_LEVIATHAN_READ_ONLY,
+        false,
+        Property.Dynamic,
+        Property.IndexScope
+    );
 
     public static final Setting<Boolean> INDEX_BLOCKS_SEARCH_ONLY_SETTING = APIBlock.SEARCH_ONLY.setting();
 

@@ -1,0 +1,15 @@
+[package]
+name = "opensearch-tiered-storage-jni"
+version = "0.1.0"
+edition = "2021"
+description = "DEPRECATED — code moved to plugins/engine-datafusion/jni/src/tiered/"
+license = "Apache-2.0"
+
+# Standalone — not part of any workspace
+[workspace]
+
+[lib]
+name = "opensearch_tiered_storage_jni"
+crate-type = ["cdylib"]
+
+[dependencies]

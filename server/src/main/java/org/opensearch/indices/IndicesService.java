@@ -393,6 +393,7 @@ public class IndicesService extends AbstractLifecycleComponent
     private final Map<String, IndexStorePlugin.DirectoryFactory> directoryFactories;
     private final Map<String, IndexStorePlugin.CompositeDirectoryFactory> compositeDirectoryFactories;
     private final Map<String, org.opensearch.index.store.CompositeStoreDirectoryFactory> compositeStoreDirectoryFactories;
+    private final Map<String, org.opensearch.index.store.CachedCompositeStoreDirectoryFactory> cachedCompositeStoreDirectoryFactories;
     private final Map<String, IngestionConsumerFactory> ingestionConsumerFactories;
     private final Map<String, IndexStorePlugin.RecoveryStateFactory> recoveryStateFactories;
     private final Map<String, IndexStorePlugin.StoreFactory> storeFactories;
@@ -448,6 +449,7 @@ public class IndicesService extends AbstractLifecycleComponent
         Map<String, IndexStorePlugin.DirectoryFactory> directoryFactories,
         Map<String, IndexStorePlugin.CompositeDirectoryFactory> compositeDirectoryFactories,
         Map<String, org.opensearch.index.store.CompositeStoreDirectoryFactory> compositeStoreDirectoryFactories,
+        Map<String, org.opensearch.index.store.CachedCompositeStoreDirectoryFactory> cachedCompositeStoreDirectoryFactories,
         ValuesSourceRegistry valuesSourceRegistry,
         Map<String, IndexStorePlugin.RecoveryStateFactory> recoveryStateFactories,
         Map<String, IndexStorePlugin.StoreFactory> storeFactories,
@@ -515,6 +517,7 @@ public class IndicesService extends AbstractLifecycleComponent
         this.directoryFactories = directoryFactories;
         this.compositeDirectoryFactories = compositeDirectoryFactories;
         this.compositeStoreDirectoryFactories = compositeStoreDirectoryFactories;
+        this.cachedCompositeStoreDirectoryFactories = cachedCompositeStoreDirectoryFactories;
         this.recoveryStateFactories = recoveryStateFactories;
         this.storeFactories = storeFactories;
         this.ingestionConsumerFactories = ingestionConsumerFactories;
@@ -648,6 +651,7 @@ public class IndicesService extends AbstractLifecycleComponent
             metaStateService,
             engineFactoryProviders,
             directoryFactories,
+            Collections.emptyMap(),
             Collections.emptyMap(),
             Collections.emptyMap(),
             valuesSourceRegistry,
@@ -1075,7 +1079,8 @@ public class IndicesService extends AbstractLifecycleComponent
             storeFactories,
             fileCache,
             compositeIndexSettings,
-            compositeStoreDirectoryFactories
+            compositeStoreDirectoryFactories,
+            cachedCompositeStoreDirectoryFactories
         );
         for (IndexingOperationListener operationListener : indexingOperationListeners) {
             indexModule.addIndexOperationListener(operationListener);
@@ -1205,7 +1210,8 @@ public class IndicesService extends AbstractLifecycleComponent
             storeFactories,
             fileCache,
             compositeIndexSettings,
-            compositeStoreDirectoryFactories
+            compositeStoreDirectoryFactories,
+            cachedCompositeStoreDirectoryFactories
         );
         pluginsService.onIndexModule(indexModule);
         return indexModule.newIndexMapperService(xContentRegistry, mapperRegistry, scriptService);

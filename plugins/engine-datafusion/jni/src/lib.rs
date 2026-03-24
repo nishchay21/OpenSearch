@@ -40,6 +40,7 @@ mod absolute_row_id_optimizer;
 mod listing_table;
 mod cache;
 mod custom_cache_manager;
+mod tiered;
 mod memory;
 mod cross_rt_stream;
 mod executor;
@@ -300,6 +301,95 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_createGlo
     Box::into_raw(Box::new(runtime)) as jlong
 }
 
+/// New createGlobalRuntime that registers an ObjectStore for file:// scheme.
+/// Called from DataFusionService when tiered storage is enabled.
+/// `obj_store_data_ptr` and `obj_store_vtable_ptr` are the fat pointer components
+/// of Arc<dyn ObjectStore>, created by tiered-storage's native lib.
+#[no_mangle]
+pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_createGlobalRuntimeWithTieredStore(
+    mut env: JNIEnv,
+    _class: JClass,
+    memory_pool_limit: jlong,
+    cache_manager_ptr: jlong,
+    spill_dir: JString,
+    spill_limit: jlong,
+    obj_store_data_ptr: jlong,
+    obj_store_vtable_ptr: jlong,
+) -> jlong {
+    let spill_dir: String = match env.get_string(&spill_dir) {
+        Ok(path) => path.into(),
+        Err(e) => {
+            let _ = env.throw_new("java/lang/IllegalArgumentException", format!("Invalid spill dir: {:?}", e));
+            return 0;
+        }
+    };
+
+    if obj_store_data_ptr == 0 || obj_store_vtable_ptr == 0 {
+        let _ = env.throw_new("java/lang/IllegalArgumentException", "ObjectStore pointer is null");
+        return 0;
+    }
+
+    log_info!("createGlobalRuntimeWithTieredStore: data_ptr={}, vtable_ptr={}", obj_store_data_ptr, obj_store_vtable_ptr);
+
+    let mut builder = DiskManagerBuilder::default()
+        .with_max_temp_directory_size(spill_limit as u64);
+    let builder = builder.with_mode(DiskManagerMode::Directories(vec![PathBuf::from(spill_dir)]));
+
+    let monitor = Arc::new(Monitor::default());
+    let memory_pool = Arc::new(MonitoredMemoryPool::new(
+        Arc::new(TrackConsumersPool::new(
+            GreedyMemoryPool::new(memory_pool_limit as usize),
+            NonZeroUsize::new(5).unwrap(),
+        )),
+        monitor.clone(),
+    ));
+
+    let (cache_manager_config, custom_cache_manager) = match cache_manager_ptr {
+        0 => (CacheManagerConfig::default(), None),
+        _ => {
+            let custom_cache_manager = unsafe { *Box::from_raw(cache_manager_ptr as *mut CustomCacheManager) };
+            (custom_cache_manager.build_cache_manager_config(), Some(custom_cache_manager))
+        }
+    };
+
+    let runtime_env = RuntimeEnvBuilder::new()
+        .with_cache_manager(cache_manager_config)
+        .with_memory_pool(memory_pool.clone())
+        .with_disk_manager_builder(builder)
+        .build().unwrap();
+
+    // Reconstruct Arc<dyn ObjectStore> from fat pointer components.
+    // The tiered-storage native lib created this via Arc::into_raw and transmuted
+    // the fat pointer into two usizes (data + vtable).
+    // We increment the strong count so the original Arc in tiered-storage stays valid.
+    {
+        use object_store::ObjectStore;
+        use url::Url;
+
+        let store: Arc<dyn ObjectStore> = unsafe {
+            let fat_ptr: *const dyn ObjectStore = std::mem::transmute([
+                obj_store_data_ptr as usize,
+                obj_store_vtable_ptr as usize,
+            ]);
+            Arc::increment_strong_count(fat_ptr);
+            Arc::from_raw(fat_ptr)
+        };
+        runtime_env.register_object_store(
+            &Url::parse("file://").unwrap(),
+            store,
+        );
+        log_info!("[TieredObjectStore] registered for file:// scheme from fat pointer");
+    }
+
+    let runtime = DataFusionRuntime {
+        runtime_env,
+        custom_cache_manager,
+        monitor,
+    };
+
+    Box::into_raw(Box::new(runtime)) as jlong
+}
+
 #[no_mangle]
 pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_closeGlobalRuntime(
     _env: JNIEnv,
@@ -309,6 +399,42 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_closeGlob
     if ptr != 0 {
         let _ = unsafe { Box::from_raw(ptr as *mut DataFusionRuntime) };
     }
+}
+
+/// Register a TieredObjectStore into an existing DataFusion runtime for the file:// scheme.
+/// Called per-shard after the TieredObjectStore is created so DataFusion reads go through
+/// the tiered storage path instead of the default LocalFileSystem.
+#[no_mangle]
+pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_registerObjectStore(
+    _env: JNIEnv,
+    _class: JClass,
+    runtime_ptr: jlong,
+    obj_store_data_ptr: jlong,
+    obj_store_vtable_ptr: jlong,
+) {
+    if runtime_ptr == 0 || obj_store_data_ptr == 0 || obj_store_vtable_ptr == 0 {
+        log_info!("[registerObjectStore] skipping — null pointer(s): runtime={}, data={}, vtable={}",
+            runtime_ptr, obj_store_data_ptr, obj_store_vtable_ptr);
+        return;
+    }
+
+    let runtime = unsafe { &*(runtime_ptr as *const DataFusionRuntime) };
+
+    let store: Arc<dyn object_store::ObjectStore> = unsafe {
+        let fat_ptr: *const dyn object_store::ObjectStore = std::mem::transmute([
+            obj_store_data_ptr as usize,
+            obj_store_vtable_ptr as usize,
+        ]);
+        Arc::increment_strong_count(fat_ptr);
+        Arc::from_raw(fat_ptr)
+    };
+
+    runtime.runtime_env.register_object_store(
+        &url::Url::parse("file://").unwrap(),
+        store,
+    );
+    log_info!("[registerObjectStore] registered TieredObjectStore for file:// scheme, data_ptr={}, vtable_ptr={}",
+        obj_store_data_ptr, obj_store_vtable_ptr);
 }
 
 #[no_mangle]
@@ -401,6 +527,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_createDat
     _class: JClass,
     table_path: JString,
     files: JObjectArray,
+    runtime_ptr: jlong,
 ) -> jlong {
     let table_path: String = match env.get_string(&table_path) {
         Ok(path) => path.into(),
@@ -424,9 +551,31 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_createDat
         }
     };
 
+    // Pull the object store from the DataFusion runtime (if available).
+    // On warm indices the runtime has a TieredObjectStore registered for file://
+    // which routes to remote when local files are evicted.
+    // On hot indices (or when runtime_ptr is 0) we pass None — local fs only.
+    let object_store: Option<Arc<dyn object_store::ObjectStore>> = if runtime_ptr != 0 {
+        let runtime = unsafe { &*(runtime_ptr as *const DataFusionRuntime) };
+        match runtime.runtime_env.object_store(
+            &ListingTableUrl::parse("file:///").expect("valid file:// URL")
+        ) {
+            Ok(store) => {
+                log_info!("[createDatafusionReader] got object store from runtime for file:// scheme");
+                Some(store)
+            }
+            Err(e) => {
+                log_info!("[createDatafusionReader] no object store in runtime for file://: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // TODO: This works since files are named similarly ending with incremental generation count, preferably move this up to DatafusionReaderManager to keep file order
     files.sort();
-    let files_metadata = match create_file_meta_from_filenames(&table_path, files.clone()) {
+    let files_metadata = match create_file_meta_from_filenames(&table_path, files.clone(), object_store) {
         Ok(metadata) => metadata,
         Err(err) => {
             let _ = env.throw_new(

@@ -77,6 +77,7 @@ public class ShardRouting implements Writeable, ToXContentObject {
     private final long expectedShardSize;
     @Nullable
     private final ShardRouting targetRelocatingShard;
+    private String nodeBoxType;
 
     /**
      * A constructor to internally create shard routing instances, note, the internal flag should only be set to true
@@ -955,5 +956,13 @@ public class ShardRouting implements Writeable, ToXContentObject {
             return unassignedInfo.getReason() == UnassignedInfo.Reason.INDEX_CREATED;
         }
         return false;
+    }
+
+    public void setAssignedNodeBoxType(String nodeBoxType) {
+        this.nodeBoxType = nodeBoxType;
+    }
+
+    public String getAssignedNodeBoxType() {
+        return nodeBoxType;
     }
 }

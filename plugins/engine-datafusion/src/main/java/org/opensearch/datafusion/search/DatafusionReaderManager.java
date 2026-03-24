@@ -36,15 +36,17 @@ public class DatafusionReaderManager implements EngineReaderManager<DatafusionRe
     private String path;
     private String dataFormat;
     private Consumer<List<String>> onFilesAdded;
+    private final long runtimePtr;
 //    private final Lock refreshLock = new ReentrantLock();
 //    private final List<ReferenceManager.RefreshListener> refreshListeners = new CopyOnWriteArrayList();
 
-    public DatafusionReaderManager(String path, Collection<FileMetadata> files, String dataFormat) throws IOException {
+    public DatafusionReaderManager(String path, Collection<FileMetadata> files, String dataFormat, long runtimePtr) throws IOException {
         WriterFileSet writerFileSet = new WriterFileSet(Path.of(URI.create("file:///" + path)), 1, 0);
         files.forEach(fileMetadata -> writerFileSet.add(fileMetadata.file()));
-        this.current = new DatafusionReader(path, null, List.of(writerFileSet));
+        this.current = new DatafusionReader(path, null, List.of(writerFileSet), runtimePtr);
         this.path = path;
         this.dataFormat = dataFormat;
+        this.runtimePtr = runtimePtr;
     }
 
     /**
@@ -85,7 +87,7 @@ public class DatafusionReaderManager implements EngineReaderManager<DatafusionRe
                 return;
             }
             Collection<WriterFileSet> newFiles = catalogSnapshot.getRef().getSearchableFiles(dataFormat);
-            this.current = new DatafusionReader(this.path, catalogSnapshot, catalogSnapshot.getRef().getSearchableFiles(dataFormat));
+            this.current = new DatafusionReader(this.path, catalogSnapshot, catalogSnapshot.getRef().getSearchableFiles(dataFormat), runtimePtr);
             if (old != null) {
                 release(old);
                 processFileChanges(old.files, newFiles);
