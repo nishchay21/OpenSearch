@@ -26,8 +26,8 @@ public final class NativeBridge {
         org.opensearch.datafusion.jni.NativeBridge.closeGlobalRuntime(ptr);
     }
 
-    public static long createDatafusionReader(String path, String[] files) {
-        return org.opensearch.datafusion.jni.NativeBridge.createDatafusionReader(path, files);
+    public static long createDatafusionReader(String path, String[] files, long runtimePtr) {
+        return org.opensearch.datafusion.jni.NativeBridge.createDatafusionReader(path, files, runtimePtr);
     }
 
     public static void closeDatafusionReader(long ptr) {

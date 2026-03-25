@@ -133,15 +133,18 @@ public class CompositeRemoteDirectory extends RemoteDirectory {
             pluginsService.filterPlugins(DataSourcePlugin.class).forEach(
                 plugin -> {
                     try {
-                        formatBlobContainers.put(plugin.getDataFormat().name(), plugin.createBlobContainer(blobStore, baseBlobPath));
+                        BlobContainer bc = plugin.createBlobContainer(blobStore, baseBlobPath);
+                        if (bc != null) {
+                            formatBlobContainers.put(plugin.getDataFormat().name(), bc);
+                        }
                     } catch (IOException e) {
                         logger.error("failed to create blob container for dataformat {} at base path {}", plugin.getDataFormat().name(), baseBlobPath, e);
                         throw new RuntimeException(e);
                     }
                 }
             );
-        } catch (NullPointerException e) {
-            formatBlobContainers.put("", null);
+        } catch (Exception e) {
+            logger.warn("failed to initialize format blob containers", e);
         }
 
         logger.debug("Created CompositeRemoteDirectory with {} format BlobContainers",

@@ -32,10 +32,12 @@ public class DatafusionReaderManager implements CatalogSnapshotAwareReaderManage
     private final Map<CatalogSnapshot, DatafusionReader> readers = new HashMap<>();
     private final String dataFormatName;
     private final String directoryPath;
+    private final long runtimePtr;
 
-    public DatafusionReaderManager(DataFormat dataFormat, ShardPath shardPath) {
+    public DatafusionReaderManager(DataFormat dataFormat, ShardPath shardPath, long runtimePtr) {
         this.dataFormatName = dataFormat.getName();
         this.directoryPath = shardPath.getDataPath().resolve(dataFormatName).toString();
+        this.runtimePtr = runtimePtr;
     }
 
     @Override
@@ -52,7 +54,7 @@ public class DatafusionReaderManager implements CatalogSnapshotAwareReaderManage
     public void afterRefresh(boolean didRefresh, CatalogSnapshot snapshot) throws IOException {
         if (didRefresh == false || readers.containsKey(snapshot)) return;
         Collection<WriterFileSet> files = snapshot.getSearchableFiles(dataFormatName);
-        readers.put(snapshot, new DatafusionReader(directoryPath, files));
+        readers.put(snapshot, new DatafusionReader(directoryPath, files, runtimePtr));
     }
 
     @Override

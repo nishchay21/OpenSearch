@@ -40,10 +40,8 @@ public class DatafusionReaderManager implements EngineReaderManager<DatafusionRe
 //    private final Lock refreshLock = new ReentrantLock();
 //    private final List<ReferenceManager.RefreshListener> refreshListeners = new CopyOnWriteArrayList();
 
-    public DatafusionReaderManager(String path, Collection<FileMetadata> files, String dataFormat) throws IOException {
-        WriterFileSet writerFileSet = new WriterFileSet(Path.of(URI.create("file:///" + path)), 1, 0, false);
     public DatafusionReaderManager(String path, Collection<FileMetadata> files, String dataFormat, long runtimePtr) throws IOException {
-        WriterFileSet writerFileSet = new WriterFileSet(Path.of(URI.create("file:///" + path)), 1, 0);
+        WriterFileSet writerFileSet = new WriterFileSet(Path.of(URI.create("file:///" + path)), 1, 0, false);
         files.forEach(fileMetadata -> writerFileSet.add(fileMetadata.file()));
         this.current = new DatafusionReader(path, null, List.of(writerFileSet), runtimePtr);
         this.path = path;
@@ -128,6 +126,6 @@ public class DatafusionReaderManager implements EngineReaderManager<DatafusionRe
     @Override
     public void onFileDeleted(Collection<String> files) throws IOException {
         // TODO - Hook cache eviction with deletion here
-        System.out.println("onFileDeleted call from DatafusionReader Manager: " + files);
+        log.debug("onFileDeleted call from DatafusionReader Manager: {}", files);
     }
 }

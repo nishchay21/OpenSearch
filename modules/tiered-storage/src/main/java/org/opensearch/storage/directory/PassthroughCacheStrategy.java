@@ -213,29 +213,46 @@ public class PassthroughCacheStrategy implements FormatCacheStrategy {
         String key = registryKey(fileName);
         int location = TieredStoreNative.registryGetLocation(registryPtr, key);
 
-        // LOCAL or BOTH — file is on disk, read locally (faster than remote)
-        if (location == TieredStoreNative.LOCATION_LOCAL
-            || location == TieredStoreNative.LOCATION_BOTH
-            || location == TieredStoreNative.LOCATION_NOT_FOUND) {
+        // LOCAL — file is local-only, read from disk
+        if (location == TieredStoreNative.LOCATION_LOCAL) {
+            return delegate.calculateChecksum(fileName);
+        }
+
+        // BOTH — prefer local (faster), fall back to remote if local read fails
+        if (location == TieredStoreNative.LOCATION_BOTH) {
             try {
                 return delegate.calculateChecksum(fileName);
             } catch (IOException e) {
-                if (location == TieredStoreNative.LOCATION_NOT_FOUND) {
-                    throw e; // truly not found anywhere
-                }
-                // BOTH but local read failed (file evicted between location check and read) — fall through to remote
                 logger.debug("[PassthroughCacheStrategy] calculateChecksum local failed for BOTH, trying remote: format={}, file={}", formatName, fileName);
             }
         }
 
-        // REMOTE or BOTH-with-local-failure — compute from remote
+        // REMOTE, BOTH-with-local-failure, or NOT_FOUND — try remote
         if (remoteDirectory != null) {
             try (IndexInput input = remoteDirectory.openInput(remoteFileName(fileName), IOContext.READONCE)) {
                 long checksum = computeCrc32(input);
-                logger.debug("[PassthroughCacheStrategy] calculateChecksum from remote: format={}, file={}, checksum={}", formatName, fileName, checksum);
+                logger.debug("[PassthroughCacheStrategy] calculateChecksum from remote: format={}, file={}, location={}", formatName, fileName, locationName(location));
                 return checksum;
             } catch (IOException e) {
+                // For NOT_FOUND: remote also failed — try local as last resort (file may exist but not yet registered)
+                if (location == TieredStoreNative.LOCATION_NOT_FOUND) {
+                    logger.debug("[PassthroughCacheStrategy] calculateChecksum remote failed for NOT_FOUND, trying local: format={}, file={}", formatName, fileName);
+                    try {
+                        return delegate.calculateChecksum(fileName);
+                    } catch (IOException localEx) {
+                        throw new IOException("calculateChecksum failed for " + fileName + " — not found in registry, remote, or local", e);
+                    }
+                }
                 throw new IOException("calculateChecksum failed for " + fileName + " — remote read failed (location=" + locationName(location) + ")", e);
+            }
+        }
+
+        // No remote directory — try local as fallback (NOT_FOUND or REMOTE without remote dir)
+        if (location == TieredStoreNative.LOCATION_NOT_FOUND) {
+            try {
+                return delegate.calculateChecksum(fileName);
+            } catch (IOException e) {
+                throw new IOException("calculateChecksum failed for " + fileName + " — not in registry or local, no remote directory", e);
             }
         }
 
@@ -247,28 +264,46 @@ public class PassthroughCacheStrategy implements FormatCacheStrategy {
         String key = registryKey(fileName);
         int location = TieredStoreNative.registryGetLocation(registryPtr, key);
 
-        // LOCAL or BOTH — file is on disk, read locally (faster than remote)
-        if (location == TieredStoreNative.LOCATION_LOCAL
-            || location == TieredStoreNative.LOCATION_BOTH
-            || location == TieredStoreNative.LOCATION_NOT_FOUND) {
+        // LOCAL — file is local-only, read from disk
+        if (location == TieredStoreNative.LOCATION_LOCAL) {
+            return delegate.calculateUploadChecksum(fileName);
+        }
+
+        // BOTH — prefer local (faster), fall back to remote if local read fails
+        if (location == TieredStoreNative.LOCATION_BOTH) {
             try {
                 return delegate.calculateUploadChecksum(fileName);
             } catch (IOException e) {
-                if (location == TieredStoreNative.LOCATION_NOT_FOUND) {
-                    throw e;
-                }
                 logger.debug("[PassthroughCacheStrategy] calculateUploadChecksum local failed for BOTH, trying remote: format={}, file={}", formatName, fileName);
             }
         }
 
-        // REMOTE or BOTH-with-local-failure — compute from remote
+        // REMOTE, BOTH-with-local-failure, or NOT_FOUND — try remote
         if (remoteDirectory != null) {
             try (IndexInput input = remoteDirectory.openInput(remoteFileName(fileName), IOContext.READONCE)) {
                 long checksum = computeCrc32(input);
-                logger.debug("[PassthroughCacheStrategy] calculateUploadChecksum from remote: format={}, file={}", formatName, fileName);
+                logger.debug("[PassthroughCacheStrategy] calculateUploadChecksum from remote: format={}, file={}, location={}", formatName, fileName, locationName(location));
                 return Long.toString(checksum);
             } catch (IOException e) {
+                // For NOT_FOUND: remote also failed — try local as last resort
+                if (location == TieredStoreNative.LOCATION_NOT_FOUND) {
+                    logger.debug("[PassthroughCacheStrategy] calculateUploadChecksum remote failed for NOT_FOUND, trying local: format={}, file={}", formatName, fileName);
+                    try {
+                        return delegate.calculateUploadChecksum(fileName);
+                    } catch (IOException localEx) {
+                        throw new IOException("calculateUploadChecksum failed for " + fileName + " — not found in registry, remote, or local", e);
+                    }
+                }
                 throw new IOException("calculateUploadChecksum failed for " + fileName + " — remote read failed (location=" + locationName(location) + ")", e);
+            }
+        }
+
+        // No remote directory — try local as fallback
+        if (location == TieredStoreNative.LOCATION_NOT_FOUND) {
+            try {
+                return delegate.calculateUploadChecksum(fileName);
+            } catch (IOException e) {
+                throw new IOException("calculateUploadChecksum failed for " + fileName + " — not in registry or local, no remote directory", e);
             }
         }
 

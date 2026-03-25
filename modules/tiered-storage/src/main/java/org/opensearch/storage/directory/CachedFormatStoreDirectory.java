@@ -110,7 +110,7 @@ public class CachedFormatStoreDirectory<T extends DataFormat> implements FormatS
 
     @Override
     public IndexInput openIndexInput(String name, IOContext context) throws IOException {
-        logger.info("[CachedFormatStoreDirectory] openIndexInput: format={}, file={}, strategy={}",
+        logger.debug("[CachedFormatStoreDirectory] openIndexInput: format={}, file={}, strategy={}",
             inner.getDataFormat().name(), name, cacheStrategy.name());
         return cacheStrategy.openInput(name, context, inner);
     }

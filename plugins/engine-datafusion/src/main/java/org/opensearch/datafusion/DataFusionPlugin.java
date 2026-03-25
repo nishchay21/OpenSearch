@@ -31,6 +31,7 @@ import org.opensearch.datafusion.search.DatafusionSearcher;
 import org.opensearch.datafusion.search.cache.CacheSettings;
 import org.opensearch.env.Environment;
 import org.opensearch.env.NodeEnvironment;
+import org.opensearch.index.IndexSettings;
 import org.opensearch.index.engine.SearchExecEngine;
 import org.opensearch.index.engine.exec.FileMetadata;
 import org.opensearch.index.engine.exec.coord.CompositeEngine;
@@ -48,6 +49,7 @@ import org.opensearch.rest.RestHandler;
 import org.opensearch.script.ScriptService;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.client.Client;
+import org.opensearch.vectorized.execution.jni.NativeObjectStoreProvider;
 import org.opensearch.watcher.ResourceWatcherService;
 
 import java.io.IOException;
@@ -241,7 +243,7 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEngi
             .orElse("");
         // Pass null for snapshotRef — the caller (DefaultPlanExecutor) owns the snapshot lifecycle
         // via try-with-resources; the bridge/reader should not release it independently.
-        DatafusionReader reader = new DatafusionReader(directoryPath, null, files);
+        DatafusionReader reader = new DatafusionReader(directoryPath, null, files, runtimePointer);
         return new DataFusionBridge(runtimePointer, reader, new RootAllocator(Long.MAX_VALUE));
     }
 

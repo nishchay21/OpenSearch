@@ -69,8 +69,10 @@ public class CompositeStoreDirectory extends Store.StoreDirectory {
             pluginsService.filterPlugins(DataSourcePlugin.class).forEach(plugin -> {
                 try {
                     FormatStoreDirectory<?> formatDir = plugin.createFormatStoreDirectory(indexSettings, shardPath);
-                    delegates.add(formatDir);
-                    delegatesMap.put(plugin.getDataFormat().name(), formatDir);
+                    if (formatDir != null) {
+                        delegates.add(formatDir);
+                        delegatesMap.put(plugin.getDataFormat().name(), formatDir);
+                    }
                 } catch (IOException e) {
                     logger.error("Failed to create FormatStoreDirectory for format: {}", plugin.getDataFormat().name(), e);
                     throw new RuntimeException("Failed to create format directory for " + plugin.getDataFormat().name(), e);
@@ -86,14 +88,14 @@ public class CompositeStoreDirectory extends Store.StoreDirectory {
     }
 
     /**
-     * Creates a metadata directory that points to the base Lucene directory where segments_N files are stored.
-     * This directory is at {@code <dataPath>/lucene/} and always exists regardless of active data formats.
+     * Creates a metadata directory that points to the base index directory where segments_N files are stored.
+     * This directory is at {@code <shard>/index/} and always exists regardless of active data formats.
      */
     private FormatStoreDirectory<?> createMetadataDirectory(ShardPath shardPath) throws IOException {
-        // Create FSDirectory pointing to <dataPath>/lucene/ where segments_N files live
-        Path luceneIndexPath = shardPath.resolveIndex(); // Returns <dataPath>/lucene/
-        Directory luceneDirectory = FSDirectory.open(luceneIndexPath);
-        return new LuceneStoreDirectory(luceneIndexPath, luceneDirectory);
+        // Create FSDirectory pointing to <shard>/index/ where segments_N and Lucene metadata files live
+        Path indexPath = shardPath.resolveIndex();
+        Directory indexDirectory = FSDirectory.open(indexPath);
+        return new LuceneStoreDirectory(indexPath, indexDirectory);
     }
 
     public void initialize() throws IOException {
@@ -120,6 +122,11 @@ public class CompositeStoreDirectory extends Store.StoreDirectory {
         logger.trace("Format routing request: searching for directory for format '{}'", dataFormatName);
 
         FormatStoreDirectory<?> directory = delegatesMap.get(dataFormatName);
+
+        // Lucene files live in the metadata directory — no separate FormatStoreDirectory
+        if (directory == null && ("Lucene".equals(dataFormatName) || "lucene".equals(dataFormatName))) {
+            directory = delegatesMap.get("metadata");
+        }
 
         if (directory == null) {
             List<String> availableFormats = new ArrayList<>(delegatesMap.keySet());

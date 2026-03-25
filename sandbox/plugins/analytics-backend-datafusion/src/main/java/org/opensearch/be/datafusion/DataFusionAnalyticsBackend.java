@@ -86,7 +86,7 @@ public class DataFusionAnalyticsBackend
 
     @Override
     public CatalogSnapshotAwareReaderManager<?> createReaderManager(DataFormat format, ShardPath shardPath) throws IOException {
-        return new DatafusionReaderManager(format, shardPath);
+        return new DatafusionReaderManager(format, shardPath, getRuntimePtr());
     }
 
     @Override

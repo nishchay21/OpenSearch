@@ -97,6 +97,13 @@ public class TieredCompositeStoreDirectory extends CompositeStoreDirectory imple
         // Track already-wrapped originals so aliases (lucene→metadata) share the same cached instance
         Map<FormatStoreDirectory<?>, CachedFormatStoreDirectory<?>> wrappedCache = new HashMap<>();
 
+        // The metadata directory (and its aliases: "lucene", toString) should only be in
+        // delegatesMap for routing — NOT in delegates. The delegates list is used by
+        // listFileMetadata() for scanning, and the metadata dir at <shard>/index/ contains
+        // subdirectories (lucene/, parquet/) that FSDirectory.listAll() returns as entries,
+        // causing spurious FileMetadata like ("LuceneDataFormat", "lucene").
+        FormatStoreDirectory<?> rawMetadataDir = metadataDir; // captured before wrapping
+
         for (Map.Entry<String, FormatStoreDirectory<?>> entry : origMap.entrySet()) {
             String key = entry.getKey();
             FormatStoreDirectory<?> orig = entry.getValue();
@@ -111,7 +118,10 @@ public class TieredCompositeStoreDirectory extends CompositeStoreDirectory imple
                 }
                 cached = new CachedFormatStoreDirectory<>(orig, strategy);
                 wrappedCache.put(orig, cached);
-                delegates.add(cached);
+                // Only add non-metadata directories to delegates (used for listing/scanning)
+                if (orig != rawMetadataDir) {
+                    delegates.add(cached);
+                }
             }
             delegatesMap.put(key, cached);
         }
@@ -124,6 +134,32 @@ public class TieredCompositeStoreDirectory extends CompositeStoreDirectory imple
 
     public long getRegistryPtr() {
         return registryPtr;
+    }
+
+    /**
+     * Override listFileMetadata to include files from both local disk AND remote store.
+     * The base implementation only scans local disk via delegates, which misses files
+     * that are remote-only (e.g., parquet files on warm nodes that were never copied locally).
+     * This is critical for peer recovery: the target's metadata must include all files
+     * so the diff marks remote files as "identical" and avoids unnecessary transfer.
+     */
+    @Override
+    public FileMetadata[] listFileMetadata() throws IOException {
+        // Start with local files from disk (base implementation)
+        Set<FileMetadata> allFiles = new HashSet<>(Arrays.asList(super.listFileMetadata()));
+
+        // Add files known to remote store that may not be on local disk
+        if (remoteDirectory != null) {
+            Map<String, UploadedSegmentMetadata> uploaded = remoteDirectory.getSegmentsUploadedToRemoteStore();
+            for (UploadedSegmentMetadata meta : uploaded.values()) {
+                String fileName = meta.getOriginalFilename();
+                String dataFormat = meta.getDataFormat();
+                FileMetadata fm = new FileMetadata(dataFormat, fileName);
+                allFiles.add(fm);
+            }
+        }
+
+        return allFiles.toArray(new FileMetadata[0]);
     }
 
     public String getRemoteBasePath() {

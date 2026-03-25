@@ -23,11 +23,11 @@ public class DatafusionReader implements Closeable {
 
     private final long ptr;
 
-    public DatafusionReader(String directoryPath, Collection<WriterFileSet> files) {
+    public DatafusionReader(String directoryPath, Collection<WriterFileSet> files, long runtimePtr) {
         String[] fileNames = files.stream()
             .flatMap(wfs -> wfs.getFiles().stream())
             .toArray(String[]::new);
-        this.ptr = NativeBridge.createDatafusionReader(directoryPath, fileNames);
+        this.ptr = NativeBridge.createDatafusionReader(directoryPath, fileNames, runtimePtr);
     }
 
     public long getPtr() {

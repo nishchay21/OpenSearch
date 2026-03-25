@@ -72,6 +72,12 @@ testClusters {
 //      }
     }
 
+    // Sandbox analytics plugins (install order matters: analytics-engine → engine-datafusion → backends → frontend)
+    plugin ':sandbox:plugins:analytics-engine'
+    plugin ':plugins:engine-datafusion'
+    plugin ':sandbox:plugins:analytics-backend-datafusion'
+    plugin ':sandbox:plugins:test-ppl-frontend'
+
     nodes.each { node ->
       node.setting 'node.search.cache.size', '80%'
       node.setting 'cluster.remote_store.index.path.type', 'fixed'
