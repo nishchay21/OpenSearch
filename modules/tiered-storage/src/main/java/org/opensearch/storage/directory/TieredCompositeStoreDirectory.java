@@ -246,14 +246,21 @@ public class TieredCompositeStoreDirectory extends CompositeStoreDirectory imple
 
             int loc = TieredStoreNative.registryGetLocation(registryPtr, registryKey);
             if (loc == TieredStoreNative.LOCATION_NOT_FOUND) {
-                long size = 0;
-                try {
-                    size = fileLength(fm);
-                } catch (Exception e) {
-                    logger.debug("[TieredCompositeStoreDirectory] could not get size for {}: {}", registryKey, e.getMessage());
+                // Only register as LOCAL if the file actually exists on disk.
+                // On warm nodes, files may be remote-only (never copied locally).
+                boolean localExists = java.nio.file.Files.exists(java.nio.file.Path.of("/" + registryKey));
+                if (localExists) {
+                    long size = 0;
+                    try {
+                        size = fileLength(fm);
+                    } catch (Exception e) {
+                        logger.debug("[TieredCompositeStoreDirectory] could not get size for {}: {}", registryKey, e.getMessage());
+                    }
+                    TieredStoreNative.registryRegisterLocal(registryPtr, registryKey, size);
+                    logger.info("[TieredCompositeStoreDirectory] beforeSyncToRemote registered LOCAL: registryKey={}, size={}", registryKey, size);
+                } else {
+                    logger.debug("[TieredCompositeStoreDirectory] beforeSyncToRemote skipped (file not on disk): registryKey={}", registryKey);
                 }
-                TieredStoreNative.registryRegisterLocal(registryPtr, registryKey, size);
-                logger.info("[TieredCompositeStoreDirectory] beforeSyncToRemote registered: registryKey={}, size={}", registryKey, size);
             }
         }
     }
@@ -287,6 +294,14 @@ public class TieredCompositeStoreDirectory extends CompositeStoreDirectory imple
                 registryKey = stripLeadingSlash(formatDir.getDirectoryPath().toString()) + "/" + originalFile;
             } else {
                 registryKey = stripLeadingSlash(localDataPath) + "/" + dataFormat + "/" + originalFile;
+            }
+
+            // Skip if already registered (avoids double-registration when directory is created twice)
+            int existingLoc = TieredStoreNative.registryGetLocation(registryPtr, registryKey);
+            if (existingLoc != TieredStoreNative.LOCATION_NOT_FOUND) {
+                logger.debug("[TieredCompositeStoreDirectory] recovery skipped (already registered): registryKey={}, location={}",
+                    registryKey, existingLoc);
+                continue;
             }
 
             String formatSubdir = dataFormat.toLowerCase();

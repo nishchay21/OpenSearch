@@ -213,17 +213,13 @@ public class PassthroughCacheStrategy implements FormatCacheStrategy {
         String key = registryKey(fileName);
         int location = TieredStoreNative.registryGetLocation(registryPtr, key);
 
-        // LOCAL — file is local-only, read from disk
-        if (location == TieredStoreNative.LOCATION_LOCAL) {
-            return delegate.calculateChecksum(fileName);
-        }
-
-        // BOTH — prefer local (faster), fall back to remote if local read fails
-        if (location == TieredStoreNative.LOCATION_BOTH) {
+        // LOCAL or BOTH — try local first (faster), fall back to remote if file missing/unreadable
+        if (location == TieredStoreNative.LOCATION_LOCAL || location == TieredStoreNative.LOCATION_BOTH) {
             try {
                 return delegate.calculateChecksum(fileName);
             } catch (IOException e) {
-                logger.debug("[PassthroughCacheStrategy] calculateChecksum local failed for BOTH, trying remote: format={}, file={}", formatName, fileName);
+                logger.debug("[PassthroughCacheStrategy] calculateChecksum local failed (location={}), trying remote: format={}, file={}",
+                    locationName(location), formatName, fileName);
             }
         }
 
@@ -264,17 +260,13 @@ public class PassthroughCacheStrategy implements FormatCacheStrategy {
         String key = registryKey(fileName);
         int location = TieredStoreNative.registryGetLocation(registryPtr, key);
 
-        // LOCAL — file is local-only, read from disk
-        if (location == TieredStoreNative.LOCATION_LOCAL) {
-            return delegate.calculateUploadChecksum(fileName);
-        }
-
-        // BOTH — prefer local (faster), fall back to remote if local read fails
-        if (location == TieredStoreNative.LOCATION_BOTH) {
+        // LOCAL or BOTH — try local first (faster), fall back to remote if file missing/unreadable
+        if (location == TieredStoreNative.LOCATION_LOCAL || location == TieredStoreNative.LOCATION_BOTH) {
             try {
                 return delegate.calculateUploadChecksum(fileName);
             } catch (IOException e) {
-                logger.debug("[PassthroughCacheStrategy] calculateUploadChecksum local failed for BOTH, trying remote: format={}, file={}", formatName, fileName);
+                logger.debug("[PassthroughCacheStrategy] calculateUploadChecksum local failed (location={}), trying remote: format={}, file={}",
+                    locationName(location), formatName, fileName);
             }
         }
 
