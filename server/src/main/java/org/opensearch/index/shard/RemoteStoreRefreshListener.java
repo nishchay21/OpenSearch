@@ -30,6 +30,7 @@ import org.opensearch.index.remote.RemoteSegmentTransferTracker;
 import org.opensearch.index.seqno.SequenceNumbers;
 import org.opensearch.index.store.CompositeStoreDirectory;
 import org.opensearch.index.store.RemoteSegmentStoreDirectory;
+import org.opensearch.index.store.RemoteSyncAware;
 import org.opensearch.index.store.remote.metadata.RemoteSegmentMetadata;
 import org.opensearch.index.translog.Translog;
 import org.opensearch.indices.RemoteStoreSettings;
@@ -307,6 +308,12 @@ public final class RemoteStoreRefreshListener extends ReleasableRetryableRefresh
                     }, () -> releaseCatalogSnapshot(catalogSnapshotRef)),
                     latch
                 );
+
+                // Register local files in the registry before checksum computation —
+                // needed because some formats (e.g. Parquet) write via native JNI bypassing createOutput()
+                if (storeDirectory instanceof RemoteSyncAware) {
+                    ((RemoteSyncAware) storeDirectory).beforeSyncToRemote(localFilesPostRefresh);
+                }
 
                 // Start the segments files upload using FileMetadata
                 uploadNewSegments(localFilesPostRefresh, fileMetadataToSizeMap, segmentUploadsCompletedListener);

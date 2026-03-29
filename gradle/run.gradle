@@ -93,9 +93,10 @@ testClusters {
       node.setting 'node.attr.remote_store.repository.my-repository-state.settings.location','/tmp/remote-store-repo/state'
       node.setting 'opensearch.experimental.feature.writable_warm_index.enabled', 'true'
       node.setting 'discovery.seed_hosts', (0..<numNodes).collect { "\"127.0.0.1:${9300 + it}\"" }.toString()
-      if (node.name.endsWith("-0")) {
+      if (node.name.endsWith("-0") || node.name.endsWith("-1")) {
         node.setting 'node.roles', '["cluster_manager", "data"]'
-      } else if (node.name.endsWith("-1")) {
+      } else if (node.name.endsWith("-2") || node.name.endsWith("-3")) {
+//        node.setting 'node.roles', '["cluster_manager", "warm"]'
         node.setting 'node.roles', '["cluster_manager", "warm"]'
       }
     }

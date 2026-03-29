@@ -151,7 +151,7 @@ impl FileRegistry {
                 local_path: key.to_string(),
                 remote_path: Some(remote_path.to_string()),
                 repo_key: Some(repo_key.to_string()),
-                location: FileLocation::Both,
+                location: FileLocation::Remote,
                 active_reads: AtomicI64::new(0),
                 total_reads: AtomicU64::new(0),
                 size: 0,
@@ -197,7 +197,7 @@ impl FileRegistry {
                 total_reads: AtomicU64::new(1),
                 size: 0,
             });
-            log_info!("[FileRegistry] acquire_read (auto-register): path={}, loc=REMOTE", key);
+            log_info!("[FileRegistry] acquire_read (auto-register REMOTE): path={}", key);
             FileLocation::Remote
         }
     }
@@ -205,9 +205,13 @@ impl FileRegistry {
     pub fn release_read(&self, key: &str) -> i64 {
         if let Some(entry) = self.entries.get(key) {
             let remaining = entry.active_reads.fetch_sub(1, Ordering::Relaxed) - 1;
+            if remaining < 0 {
+                log_info!("[FileRegistry] release_read WARNING: negative active_reads={} for path={}", remaining, key);
+            }
             log_info!("[FileRegistry] release_read: path={}, active_reads={}", key, remaining);
             remaining
         } else {
+            log_info!("[FileRegistry] release_read WARNING: unknown file path={}", key);
             0
         }
     }

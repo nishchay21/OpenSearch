@@ -476,13 +476,11 @@ public class CompositeEngine implements LifecycleAware, Closeable, Indexer, Chec
                 SequenceNumbers.loadSeqNoInfoFromLuceneCommit(store.readLastCommittedSegmentsInfo().getUserData().entrySet());
             maxSeqNo = seqNoStats.maxSeqNo;
             localCheckpoint = seqNoStats.localCheckpoint;
-            logger.trace("recovered maximum sequence number [{}] and local checkpoint [{}]", maxSeqNo, localCheckpoint);
+            logger.info("[CHECKPOINT_DEBUG] recovered maxSeqNo=[{}] localCheckpoint=[{}]", maxSeqNo, localCheckpoint);
         } catch (org.apache.lucene.index.IndexNotFoundException e) {
-            // Local store is empty (remote store recovery scenario)
-            // Initialize with NO_OPS_PERFORMED (-1) - checkpoint will be restored from CatalogSnapshot during first flush
-            logger.debug(
-                "Local store is empty during engine initialization, initializing checkpoint tracker with NO_OPS_PERFORMED. "
-                + "This is expected during remote store recovery where local store has not been initialized yet."
+            logger.warn(
+                "[CHECKPOINT_DEBUG] IndexNotFoundException during engine init — segments_N not found. "
+                + "Initializing checkpoint tracker with NO_OPS_PERFORMED (-1)."
             );
             return localCheckpointTrackerSupplier.apply(
                 SequenceNumbers.NO_OPS_PERFORMED,

@@ -87,7 +87,7 @@ public class TieredCompositeStoreDirectoryFactory implements CachedCompositeStor
             pluginsService,
             shardId,
             shardPath,
-            (formatName, dirPathPrefix) -> new PassthroughCacheStrategy(formatName, remoteDirectory, registryPtr, dirPathPrefix),
+            (formatName, dirPathPrefix) -> new PassthroughCacheStrategy(formatName),
             registryPtr,
             remoteDataBlobPath,
             repositoryName,

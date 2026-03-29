@@ -23,11 +23,14 @@ import org.opensearch.index.engine.exec.coord.CatalogSnapshot;
 import org.opensearch.index.engine.exec.coord.CatalogSnapshotManager;
 import org.opensearch.index.engine.exec.coord.CompositeEngine;
 import org.opensearch.index.engine.exec.coord.CompositeEngineCatalogSnapshot;
+import org.opensearch.index.engine.exec.composite.CompositeDataFormatWriter;
 import org.opensearch.index.engine.exec.coord.SegmentInfosCatalogSnapshot;
 import org.opensearch.index.engine.exec.commit.LuceneCommitEngine;
 import org.opensearch.index.engine.exec.FileMetadata;
 import org.opensearch.index.engine.SearchExecEngine;
 import org.opensearch.index.mapper.MapperService;
+import org.opensearch.index.store.CompositeStoreDirectory;
+import org.opensearch.index.store.RemoteSyncAware;
 import org.opensearch.index.seqno.LocalCheckpointTracker;
 import org.opensearch.index.seqno.SeqNoStats;
 import org.opensearch.index.seqno.SequenceNumbers;
@@ -174,6 +177,14 @@ public class NRTReplicationCompositeEngine extends CompositeEngine {
 
     // Translog-only operations (from NRTReplicationEngine)
 
+    // NRT replica engine only writes to translog — no composite writer needed.
+    // Returning null prevents expensive parquet writer creation during peer recovery.
+    // FieldMapper.isPluggableDataFormatFeatureEnabled checks for null and falls back to Lucene-only path.
+    @Override
+    public CompositeDataFormatWriter.CompositeDocumentInput documentInput() {
+        return null;
+    }
+
     @Override
     public Engine.IndexResult index(Engine.Index index) throws IOException {
         ensureOpen();
@@ -245,6 +256,22 @@ public class NRTReplicationCompositeEngine extends CompositeEngine {
         if (catalogSnapshot != null) {
             long maxGenerationInSnapshot = catalogSnapshot.getLastWriterGeneration();
             engine.updateWriterGenerationIfNeeded(maxGenerationInSnapshot);
+        }
+
+        // On warm replicas, files arrive via segment replication but are never written locally.
+        // Ensure new files from the catalog snapshot are registered in the FileRegistry with
+        // their remote paths before DatafusionReaderManager creates a reader (which reads
+        // through TieredObjectStore and needs the registry to route to remote).
+        if (engineConfig.getIndexSettings().isWarmIndex() && catalogSnapshot != null) {
+            CompositeStoreDirectory compositeDir = store.compositeStoreDirectory();
+            if (compositeDir instanceof RemoteSyncAware) {
+                try {
+                    Collection<FileMetadata> files = catalogSnapshot.getFileMetadataList();
+                    ((RemoteSyncAware) compositeDir).ensureFilesRegistered(files);
+                } catch (Exception e) {
+                    logger.warn("Failed to ensure files registered from replication snapshot", e);
+                }
+            }
         }
 
         updateSearchEngine();

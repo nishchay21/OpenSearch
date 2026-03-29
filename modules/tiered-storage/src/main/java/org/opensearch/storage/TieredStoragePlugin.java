@@ -462,6 +462,16 @@ public class TieredStoragePlugin extends Plugin implements IndexStorePlugin, Act
 
     @Override
     public void close() {
+        // Destroy object store FIRST — it holds an Arc<FileRegistry> reference.
+        // Destroying it drops the reference, ensuring no in-flight reads access the registry
+        // after it's freed.
+        if (globalObjStoreDataPtr != 0 && globalObjStoreVtablePtr != 0) {
+            logger.info("[TieredStoragePlugin] destroying global TieredObjectStore, data_ptr={}, vtable_ptr={}",
+                globalObjStoreDataPtr, globalObjStoreVtablePtr);
+            TieredStoreNative.destroyTieredObjectStore(globalObjStoreDataPtr, globalObjStoreVtablePtr);
+            globalObjStoreDataPtr = 0;
+            globalObjStoreVtablePtr = 0;
+        }
         if (globalRegistryPtr != 0) {
             // Final sweep before shutdown
             int pending = TieredStoreNative.registryPendingDeleteCount(globalRegistryPtr);
@@ -474,13 +484,6 @@ public class TieredStoragePlugin extends Plugin implements IndexStorePlugin, Act
             TieredStoreNative.registryLogSummary(globalRegistryPtr);
             TieredStoreNative.destroyFileRegistry(globalRegistryPtr);
             globalRegistryPtr = 0;
-        }
-        if (globalObjStoreDataPtr != 0 && globalObjStoreVtablePtr != 0) {
-            logger.info("[TieredStoragePlugin] destroying global TieredObjectStore, data_ptr={}, vtable_ptr={}",
-                globalObjStoreDataPtr, globalObjStoreVtablePtr);
-            TieredStoreNative.destroyTieredObjectStore(globalObjStoreDataPtr, globalObjStoreVtablePtr);
-            globalObjStoreDataPtr = 0;
-            globalObjStoreVtablePtr = 0;
         }
     }
 }

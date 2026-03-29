@@ -40,4 +40,16 @@ public interface RemoteSyncAware {
      * @param fileMetadataCollection the files about to be uploaded
      */
     void beforeSyncToRemote(Collection<FileMetadata> fileMetadataCollection);
+
+    /**
+     * Ensures the given files are registered in the file registry with their remote paths.
+     * Called on warm replicas during segment replication, after the catalog snapshot is applied
+     * but before search engine readers attempt to read the files.
+     * <p>
+     * Only registers files that are not already in the registry. For each unregistered file,
+     * resolves the remote path from remote segment metadata and registers it.
+     *
+     * @param files the files from the replicated catalog snapshot
+     */
+    default void ensureFilesRegistered(Collection<FileMetadata> files) {}
 }

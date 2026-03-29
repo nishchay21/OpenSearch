@@ -354,7 +354,7 @@ public abstract class FieldMapper extends Mapper implements Cloneable {
             isPluggableDataFormatFeatureEnabled = featureFlagEnabled ? 1 : 0;
         }
 
-        return isPluggableDataFormatFeatureEnabled == 1;
+        return isPluggableDataFormatFeatureEnabled == 1 && parseContext.compositeDocumentInput() != null;
     }
 
     @Override

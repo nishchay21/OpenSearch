@@ -111,12 +111,10 @@ public class TieredCompositeStoreDirectory extends CompositeStoreDirectory imple
             CachedFormatStoreDirectory<?> cached = wrappedCache.get(orig);
             if (cached == null) {
                 String formatName = orig.getDataFormat().name();
-                String dirPathPrefix = stripLeadingSlash(orig.getDirectoryPath().toString());
-                FormatCacheStrategy strategy = cacheStrategyFactory.apply(formatName, dirPathPrefix);
-                if (strategy instanceof PassthroughCacheStrategy) {
-                    ((PassthroughCacheStrategy) strategy).setOwningDirectory(this);
-                }
-                cached = new CachedFormatStoreDirectory<>(orig, strategy);
+                String dirPath = stripLeadingSlash(orig.getDirectoryPath().toString());
+                FormatCacheStrategy strategy = cacheStrategyFactory.apply(formatName, dirPath);
+                cached = new CachedFormatStoreDirectory<>(orig, strategy, registryPtr, remoteDirectory, dirPath);
+                cached.setOwningDirectory(this);
                 wrappedCache.put(orig, cached);
                 // Only add non-metadata directories to delegates (used for listing/scanning)
                 if (orig != rawMetadataDir) {
@@ -166,6 +164,10 @@ public class TieredCompositeStoreDirectory extends CompositeStoreDirectory imple
         return remoteBasePath;
     }
 
+    public String getRepoKey() {
+        return repoKey;
+    }
+
     @Override
     public void afterSyncToRemote(String fileName, String remotePath) {
         FileMetadata fileMetadata = new FileMetadata(remotePath);
@@ -198,7 +200,7 @@ public class TieredCompositeStoreDirectory extends CompositeStoreDirectory imple
             registryKey = stripLeadingSlash(localDataPath) + "/" + formatName + "/" + fileName;
         }
 
-        logger.info("[TieredCompositeStoreDirectory] afterSyncToRemote: file={}, registryKey={}, " +
+        logger.debug("[TieredCompositeStoreDirectory] afterSyncToRemote: file={}, registryKey={}, " +
             "resolvedRemoteFilename={}, fullRemotePath={}",
             fileName, registryKey, actualRemoteFilename, fullRemotePath);
         TieredStoreNative.registryMarkSyncedToRemote(registryPtr, registryKey, fullRemotePath, repoKey);
@@ -214,7 +216,7 @@ public class TieredCompositeStoreDirectory extends CompositeStoreDirectory imple
             }
         } else {
             TieredStoreNative.registryAddPendingDelete(registryPtr, "/" + registryKey);
-            logger.info("[TieredCompositeStoreDirectory] afterSyncToRemote: deferring local delete, " +
+            logger.debug("[TieredCompositeStoreDirectory] afterSyncToRemote: deferring local delete, " +
                 "activeReads={}, file={}, registryKey={}", activeReads, fileName, registryKey);
         }
 
@@ -223,7 +225,7 @@ public class TieredCompositeStoreDirectory extends CompositeStoreDirectory imple
         if (pending > 0) {
             int swept = TieredStoreNative.registrySweepPendingDeletes(registryPtr);
             if (swept > 0) {
-                logger.info("[TieredCompositeStoreDirectory] afterSyncToRemote sweep: deleted={}, remaining={}",
+                logger.debug("[TieredCompositeStoreDirectory] afterSyncToRemote sweep: deleted={}, remaining={}",
                     swept, TieredStoreNative.registryPendingDeleteCount(registryPtr));
             }
         }
@@ -257,12 +259,97 @@ public class TieredCompositeStoreDirectory extends CompositeStoreDirectory imple
                         logger.debug("[TieredCompositeStoreDirectory] could not get size for {}: {}", registryKey, e.getMessage());
                     }
                     TieredStoreNative.registryRegisterLocal(registryPtr, registryKey, size);
-                    logger.info("[TieredCompositeStoreDirectory] beforeSyncToRemote registered LOCAL: registryKey={}, size={}", registryKey, size);
+                    logger.debug("[TieredCompositeStoreDirectory] beforeSyncToRemote registered LOCAL: registryKey={}, size={}", registryKey, size);
                 } else {
                     logger.debug("[TieredCompositeStoreDirectory] beforeSyncToRemote skipped (file not on disk): registryKey={}", registryKey);
                 }
             }
         }
+    }
+
+    @Override
+    public void ensureFilesRegistered(Collection<FileMetadata> files) {
+        if (remoteDirectory == null || files == null || files.isEmpty()) {
+            return;
+        }
+
+        // Collect files that are not yet in the registry
+        List<FileMetadata> unregistered = new ArrayList<>();
+        for (FileMetadata fm : files) {
+            String registryKey = buildRegistryKey(fm.dataFormat(), fm.file());
+            int loc = TieredStoreNative.registryGetLocation(registryPtr, registryKey);
+            if (loc == TieredStoreNative.LOCATION_NOT_FOUND) {
+                unregistered.add(fm);
+            }
+        }
+
+        if (unregistered.isEmpty()) {
+            return;
+        }
+
+        // Fetch remote metadata once for all lookups
+        Map<String, UploadedSegmentMetadata> uploaded = remoteDirectory.getSegmentsUploadedToRemoteStore();
+        if (uploaded.isEmpty()) {
+            logger.debug("[TieredCompositeStoreDirectory] ensureFilesRegistered: no remote metadata available");
+            return;
+        }
+
+        int registered = 0;
+        for (FileMetadata fm : unregistered) {
+            String fileName = fm.file();
+            String formatName = fm.dataFormat();
+            String registryKey = buildRegistryKey(formatName, fileName);
+
+            // Find matching entry in remote metadata
+            UploadedSegmentMetadata meta = findUploadedMetadata(uploaded, fileName, formatName);
+            if (meta == null) {
+                logger.debug("[TieredCompositeStoreDirectory] ensureFilesRegistered: no remote metadata for file={}, format={}",
+                    fileName, formatName);
+                continue;
+            }
+
+            String remoteFile = meta.getUploadedFilename();
+            String formatSubdir = formatName.toLowerCase();
+            String fullRemotePath;
+            if (remoteBasePath.endsWith("/")) {
+                fullRemotePath = remoteBasePath + formatSubdir + "/" + remoteFile;
+            } else {
+                fullRemotePath = remoteBasePath + "/" + formatSubdir + "/" + remoteFile;
+            }
+
+            boolean localExists = java.nio.file.Files.exists(java.nio.file.Path.of("/" + registryKey));
+            if (localExists) {
+                TieredStoreNative.registryRegisterLocal(registryPtr, registryKey, meta.getLength());
+            }
+            TieredStoreNative.registryMarkSyncedToRemote(registryPtr, registryKey, fullRemotePath, repoKey);
+            registered++;
+
+            logger.debug("[TieredCompositeStoreDirectory] ensureFilesRegistered: registryKey={}, remotePath={}, format={}, localExists={}",
+                registryKey, fullRemotePath, formatName, localExists);
+        }
+
+        if (registered > 0) {
+            logger.info("[TieredCompositeStoreDirectory] ensureFilesRegistered: registered {} new files from replication snapshot",
+                registered);
+        }
+    }
+
+    private String buildRegistryKey(String formatName, String fileName) {
+        FormatStoreDirectory<?> formatDir = delegatesMap.get(formatName);
+        if (formatDir != null) {
+            return stripLeadingSlash(formatDir.getDirectoryPath().toString()) + "/" + fileName;
+        }
+        return stripLeadingSlash(localDataPath) + "/" + formatName + "/" + fileName;
+    }
+
+    private UploadedSegmentMetadata findUploadedMetadata(Map<String, UploadedSegmentMetadata> uploaded,
+                                                          String fileName, String formatName) {
+        for (UploadedSegmentMetadata meta : uploaded.values()) {
+            if (meta.getOriginalFilename().equals(fileName) && meta.getDataFormat().equals(formatName)) {
+                return meta;
+            }
+        }
+        return null;
     }
 
     /**
@@ -337,7 +424,7 @@ public class TieredCompositeStoreDirectory extends CompositeStoreDirectory imple
 
     /**
      * Try to delete a local file after the last reader releases its reference.
-     * Called from PassthroughCacheStrategy's RefCountedIndexInput when
+     * Called from CachedFormatStoreDirectory's RefCountedIndexInput when
      * active_reads drops to 0 and the file is REMOTE-only.
      *
      * @param registryKey the registry key (path without leading "/")
@@ -365,15 +452,15 @@ public class TieredCompositeStoreDirectory extends CompositeStoreDirectory imple
     }
 
     private boolean deleteLocalFile(FormatStoreDirectory<?> formatDir, String formatName, String fileName, String registryKey) {
+        // Delete the physical file directly — bypass CachedFormatStoreDirectory.deleteFile
+        // to avoid double registry operations (afterSyncToRemote already updated the registry).
+        java.nio.file.Path localPath = java.nio.file.Path.of("/" + registryKey);
         try {
-            if (formatDir != null) {
-                formatDir.deleteFile(fileName);
-            } else {
-                java.nio.file.Path localPath = java.nio.file.Path.of("/" + registryKey);
-                java.nio.file.Files.deleteIfExists(localPath);
+            if (java.nio.file.Files.deleteIfExists(localPath)) {
+                logger.info("[TieredCompositeStoreDirectory] local file deleted after sync: file={}, registryKey={}", fileName, registryKey);
+                return true;
             }
-            logger.info("[TieredCompositeStoreDirectory] local file deleted after sync: file={}, registryKey={}", fileName, registryKey);
-            return true;
+            return false;
         } catch (IOException e) {
             logger.warn("[TieredCompositeStoreDirectory] failed to delete local file after sync: file={}, registryKey={}, error={}",
                 fileName, registryKey, e.getMessage());
