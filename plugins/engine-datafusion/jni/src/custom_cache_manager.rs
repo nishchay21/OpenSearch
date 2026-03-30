@@ -10,14 +10,17 @@ use crate::util::{create_object_meta_from_file};
 use object_store::path::Path;
 use object_store::ObjectMeta;
 use datafusion::datasource::physical_plan::parquet::metadata::DFParquetMetadata;
-use vectorized_exec_spi::{log_debug, log_error};
+use vectorized_exec_spi::{log_debug, log_error, log_info};
+use crate::foyer_cache::FoyerDiskPageCache;
 
 /// Custom CacheManager that holds cache references directly
 pub struct CustomCacheManager {
-    /// Direct reference to the file metadata cache
+    /// Direct reference to the file metadata cache (Cache Layer 1: Parquet footer/schema)
     file_metadata_cache: Option<Arc<MutexFileMetadataCache>>,
-    /// Direct reference to the statistics cache
-    statistics_cache: Option<Arc<CustomStatisticsCache>>
+    /// Direct reference to the statistics cache (Cache Layer 2: row counts, min/max stats)
+    statistics_cache: Option<Arc<CustomStatisticsCache>>,
+    /// Foyer-backed hybrid (memory+disk) page cache (Cache Layer 3: Parquet column chunk byte ranges)
+    pub page_cache: Option<Arc<FoyerDiskPageCache>>,
 }
 
 impl CustomCacheManager {
@@ -25,20 +28,41 @@ impl CustomCacheManager {
     pub fn new() -> Self {
         Self {
             file_metadata_cache: None,
-            statistics_cache: None
+            statistics_cache: None,
+            page_cache: None,
         }
     }
 
-    /// Set the file metadata cache
+    /// Set the file metadata cache (Layer 1)
     pub fn set_file_metadata_cache(&mut self, cache: Arc<MutexFileMetadataCache>) {
         self.file_metadata_cache = Some(cache);
         log_debug!("[CACHE INFO] File metadata cache set in CustomCacheManager");
     }
 
-    /// Set the statistics cache
+    /// Set the statistics cache (Layer 2)
     pub fn set_statistics_cache(&mut self, cache: Arc<CustomStatisticsCache>) {
         self.statistics_cache = Some(cache);
         log_debug!("[CACHE INFO] Statistics cache set in CustomCacheManager");
+    }
+
+    /// Set the Foyer page cache (Layer 3).
+    ///
+    /// Once set, the `CachingObjectStore` (wrapping this cache) will intercept all
+    /// `get_range()` calls to DataFusion's ObjectStore, returning cached bytes on HIT
+    /// and populating the cache on MISS.
+    pub fn set_page_cache(&mut self, cache: Arc<FoyerDiskPageCache>) {
+        log_info!(
+            "[FOYER-PAGE-CACHE] page cache set in CustomCacheManager: mem={}B, disk={}B, dir={}",
+            cache.memory_capacity_bytes(),
+            cache.disk_capacity_bytes(),
+            cache.disk_dir().display()
+        );
+        self.page_cache = Some(cache);
+    }
+
+    /// Get the Foyer page cache (Layer 3), if configured.
+    pub fn get_page_cache(&self) -> Option<Arc<FoyerDiskPageCache>> {
+        self.page_cache.clone()
     }
 
     /// Get the statistics cache
@@ -167,6 +191,12 @@ impl CustomCacheManager {
                 }
             }
 
+            // Evict all cached page byte ranges for this file (Layer 3)
+            if let Some(page_cache) = &self.page_cache {
+                page_cache.evict_file(file_path);
+                any_removed = true; // evict_file is best-effort, count as success
+            }
+
             let removed = if !errors.is_empty() && !any_removed {
                 false
             } else {
@@ -257,28 +287,38 @@ impl CustomCacheManager {
     pub fn get_total_memory_consumed(&self) -> usize {
         let mut total = 0;
 
-        // Add metadata cache memory
+        // Layer 1: metadata cache memory
         if let Some(cache) = &self.file_metadata_cache {
             if let Ok(cache_guard) = cache.inner.lock() {
                 total += cache_guard.memory_used();
             }
         }
 
-        // Add statistics cache memory
+        // Layer 2: statistics cache memory
         if let Some(cache) = &self.statistics_cache {
             total += cache.memory_consumed();
+        }
+
+        // Layer 3: page cache memory (Foyer reports usage in bytes)
+        if let Some(cache) = &self.page_cache {
+            total += cache.memory_usage_bytes();
         }
 
         total
     }
 
-    /// Clear all caches
+    /// Clear all caches (Layers 1, 2, and 3)
     pub fn clear_all(&self) {
         if let Some(cache) = &self.file_metadata_cache {
             cache.clear();
         }
         if let Some(cache) = &self.statistics_cache {
             cache.clear();
+        }
+        // FoyerDiskPageCache.clear() is async — use the blocking wrapper
+        if let Some(cache) = &self.page_cache {
+            log_info!("[FOYER-PAGE-CACHE] clear_all: clearing page cache (memory + disk)");
+            cache.clear_blocking();
         }
     }
 
@@ -299,6 +339,15 @@ impl CustomCacheManager {
                     Ok(())
                 } else {
                     Err("No statistics cache configured".to_string())
+                }
+            }
+            crate::cache::CACHE_TYPE_PAGES => {
+                if let Some(cache) = &self.page_cache {
+                    log_info!("[FOYER-PAGE-CACHE] clear_cache_type PAGES: clearing page cache (memory + disk)");
+                    cache.clear_blocking();
+                    Ok(())
+                } else {
+                    Err("No page cache configured".to_string())
                 }
             }
             _ => Err(format!("Unknown cache type: {}", cache_type))
@@ -324,6 +373,13 @@ impl CustomCacheManager {
                     Ok(cache.memory_consumed())
                 } else {
                     Err("No statistics cache configured".to_string())
+                }
+            }
+            crate::cache::CACHE_TYPE_PAGES => {
+                if let Some(cache) = &self.page_cache {
+                    Ok(cache.memory_usage_bytes())
+                } else {
+                    Err("No page cache configured".to_string())
                 }
             }
             _ => Err(format!("Unknown cache type: {}", cache_type))

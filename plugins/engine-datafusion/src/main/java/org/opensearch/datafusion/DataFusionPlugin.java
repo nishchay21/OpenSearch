@@ -49,6 +49,7 @@ import org.opensearch.rest.RestHandler;
 import org.opensearch.script.ScriptService;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.client.Client;
+import org.opensearch.vectorized.execution.jni.PageCacheProvider;
 import org.opensearch.vectorized.execution.jni.NativeObjectStoreProvider;
 import org.opensearch.watcher.ResourceWatcherService;
 
@@ -76,8 +77,11 @@ import static org.opensearch.datafusion.core.DataFusionRuntimeEnv.DATAFUSION_SPI
 /**
  * Main plugin class for OpenSearch DataFusion integration.
  *
+ * Also implements {@link PageCacheProvider} so that the tiered-storage module's
+ * {@code CachedParquetCacheStrategy} can call back into the page cache owned
+ * by this plugin, without any classloader visibility issues.
  */
-public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEnginePlugin, AnalyticsBackEndPlugin, ExtensiblePlugin, SearchAnalyticsBackEndPlugin {
+public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEnginePlugin, AnalyticsBackEndPlugin, ExtensiblePlugin, SearchAnalyticsBackEndPlugin, PageCacheProvider {
 
     private DataFusionService dataFusionService;
 
@@ -296,6 +300,34 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEngi
         SearchAnalyticsBackEndPlugin child = getChildSearchBackend();
         if (child != null) return child.createSearchExecEngine(format, shardPath);
         return null;
+    }
+
+    // ---- PageCacheProvider implementation ----
+    // Delegates to the Foyer page cache inside the DataFusion runtime via JNI.
+    // Called by CachedParquetCacheStrategy in the tiered-storage module.
+
+    @Override
+    public byte[] getPageRange(String path, int start, int end) {
+        if (dataFusionService == null) return null;
+        long runtimePtr = dataFusionService.getRuntimePointer();
+        if (runtimePtr == 0) return null;
+        return org.opensearch.datafusion.jni.NativeBridge.foyerPageCacheGet(runtimePtr, path, start, end);
+    }
+
+    @Override
+    public void putPageRange(String path, int start, int end, byte[] data) {
+        if (dataFusionService == null || data == null) return;
+        long runtimePtr = dataFusionService.getRuntimePointer();
+        if (runtimePtr == 0) return;
+        org.opensearch.datafusion.jni.NativeBridge.foyerPageCachePut(runtimePtr, path, start, end, data);
+    }
+
+    @Override
+    public void evictFile(String path) {
+        if (dataFusionService == null) return;
+        long runtimePtr = dataFusionService.getRuntimePointer();
+        if (runtimePtr == 0) return;
+        org.opensearch.datafusion.jni.NativeBridge.foyerPageCacheEvictFile(runtimePtr, path);
     }
 
     public interface ParentAware {

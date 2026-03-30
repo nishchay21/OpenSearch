@@ -91,6 +91,36 @@ public final class NativeBridge {
     // Memory monitoring
     public static native void printMemoryPoolAllocation(long runtimePtr);
 
+    // Foyer page cache operations (Layer 3: compressed Parquet byte range cache)
+    // These operate on the FoyerPageCacheWithIndex inside the DataFusion runtime's CustomCacheManager.
+
+    /**
+     * Look up a cached byte range for a Parquet file.
+     * @param runtimePtr the DataFusion runtime pointer
+     * @param path       file path key (local path without leading slash)
+     * @param start      byte range start (inclusive)
+     * @param end        byte range end (exclusive)
+     * @return cached bytes, or null on cache miss
+     */
+    public static native byte[] foyerPageCacheGet(long runtimePtr, String path, int start, int end);
+
+    /**
+     * Store a byte range for a Parquet file in the Foyer page cache.
+     * @param runtimePtr the DataFusion runtime pointer
+     * @param path       file path key
+     * @param start      byte range start (inclusive)
+     * @param end        byte range end (exclusive)
+     * @param data       the bytes to cache
+     */
+    public static native void foyerPageCachePut(long runtimePtr, String path, int start, int end, byte[] data);
+
+    /**
+     * Evict all cached byte ranges for a given file from the Foyer page cache.
+     * @param runtimePtr the DataFusion runtime pointer
+     * @param path       file path whose ranges should be evicted
+     */
+    public static native void foyerPageCacheEvictFile(long runtimePtr, String path);
+
 
     // Logger initialization
     public static native void initLogger();

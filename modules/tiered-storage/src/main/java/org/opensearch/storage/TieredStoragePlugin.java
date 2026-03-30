@@ -66,6 +66,8 @@ import org.opensearch.storage.tiering.WarmToHotTieringService;
 import org.opensearch.telemetry.metrics.MetricsRegistry;
 import org.opensearch.telemetry.tracing.Tracer;
 import org.opensearch.index.store.CompositeStoreDirectoryFactory;
+import org.opensearch.vectorized.execution.jni.PageCacheAware;
+import org.opensearch.vectorized.execution.jni.PageCacheProvider;
 import org.opensearch.vectorized.execution.jni.NativeObjectStoreProvider;
 
 import java.util.ArrayList;
@@ -88,7 +90,7 @@ import static org.opensearch.storage.slowlogs.TieredStorageSearchSlowLog.TIERED_
  * Per-repository remote stores are added to the shared {@code FileRegistry} as new
  * repositories are encountered. Different indices can point to different repositories.
  */
-public class TieredStoragePlugin extends Plugin implements IndexStorePlugin, ActionPlugin, TelemetryAwarePlugin, NativeObjectStoreProvider {
+public class TieredStoragePlugin extends Plugin implements IndexStorePlugin, ActionPlugin, TelemetryAwarePlugin, NativeObjectStoreProvider, PageCacheAware {
 
     private static final org.apache.logging.log4j.Logger logger = org.apache.logging.log4j.LogManager.getLogger(TieredStoragePlugin.class);
 
@@ -100,6 +102,14 @@ public class TieredStoragePlugin extends Plugin implements IndexStorePlugin, Act
     private TierActionMetrics tierActionMetrics;
 
     private volatile Supplier<RepositoriesService> repositoriesServiceSupplier;
+
+    /**
+     * Page cache provider — received from DataFusionPlugin via Node.java.
+     * Passed into TieredCompositeStoreDirectoryFactory so that CachedParquetCacheStrategy
+     * can be used for parquet format files instead of PassthroughCacheStrategy.
+     * May be null if DataFusionPlugin is not loaded or page cache is disabled.
+     */
+    private volatile PageCacheProvider pageCacheProvider;
 
     // Global native ObjectStore — created lazily on first warm shard creation
     private volatile long globalObjStoreDataPtr;
@@ -139,6 +149,17 @@ public class TieredStoragePlugin extends Plugin implements IndexStorePlugin, Act
         return Collections.emptyMap();
     }
 
+    /**
+     * Set the page cache provider (e.g. from DataFusionPlugin).
+     * Called by Node.java after discovering a plugin implementing {@link PageCacheProvider},
+     * so TieredCompositeStoreDirectoryFactory can use CachedParquetCacheStrategy.
+     */
+    @Override
+    public void setPageCacheProvider(PageCacheProvider provider) {
+        this.pageCacheProvider = provider;
+        logger.info("[TieredStoragePlugin] PageCacheProvider set — parquet reads will use page cache");
+    }
+
     @Override
     public Map<String, org.opensearch.index.store.CachedCompositeStoreDirectoryFactory> getCachedCompositeStoreDirectoryFactories() {
         return Map.of(TIERED_COMPOSITE_INDEX_TYPE, new TieredCompositeStoreDirectoryFactory(
@@ -147,7 +168,12 @@ public class TieredStoragePlugin extends Plugin implements IndexStorePlugin, Act
                 ensureGlobalObjectStoreCreated();
                 ensureRemoteStoreForRepo(repoName);
                 return globalRegistryPtr;
-            }
+            },
+            // Pass as Supplier so it is resolved LAZILY at shard creation time (newDirectory()).
+            // getCachedCompositeStoreDirectoryFactories() is called in Node.java at line ~973
+            // BEFORE setPageCacheProvider() is called at line ~1191.
+            // The Supplier captures 'this' and reads the volatile field at call time, not now.
+            () -> this.pageCacheProvider
         ));
     }
 

@@ -98,6 +98,22 @@ public class DataFusionService extends AbstractLifecycleComponent {
     @Override
     protected void doStop() {
         logger.info("Stopping DataFusion service");
+        // Clear the Foyer page cache BEFORE shutting down the Tokio runtime.
+        // If the runtime is shut down first, Foyer's background store tasks get
+        // JoinError::Cancelled and foyer-storage panics at store.rs:151.
+        // Calling clear() (which calls cache.close().await) drains Foyer's async
+        // tasks cleanly while the runtime is still alive.
+        if (runtimeEnv != null) {
+            long runtimePtr = runtimeEnv.getPointer();
+            if (runtimePtr != 0) {
+                try {
+                    org.opensearch.datafusion.jni.NativeBridge.cacheManagerClear(runtimePtr);
+                    logger.info("[FOYER-PAGE-CACHE] page cache cleared before runtime shutdown");
+                } catch (Exception e) {
+                    logger.warn("[FOYER-PAGE-CACHE] error clearing page cache on shutdown: {}", e.getMessage());
+                }
+            }
+        }
         runtimeEnv.close();
         logger.info("DataFusion service stopped");
     }

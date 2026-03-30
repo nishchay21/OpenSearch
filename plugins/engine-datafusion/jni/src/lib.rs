@@ -40,6 +40,8 @@ mod absolute_row_id_optimizer;
 mod listing_table;
 mod cache;
 mod custom_cache_manager;
+mod foyer_cache;
+mod caching_object_store;
 mod tiered;
 mod memory;
 mod cross_rt_stream;
@@ -294,6 +296,24 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_createGlo
         .with_disk_manager_builder(builder)
         .build().unwrap();
 
+    // If a Foyer page cache is configured, wrap the default LocalFileSystem for file://
+    // with CachingObjectStore so all get_range / get_ranges calls are intercepted.
+    if let Some(ref mgr) = custom_cache_manager {
+        if let Some(page_cache) = mgr.get_page_cache() {
+            use crate::caching_object_store::CachingObjectStore;
+            use object_store::local::LocalFileSystem;
+            use url::Url;
+
+            let base_store: Arc<dyn object_store::ObjectStore> = Arc::new(LocalFileSystem::new());
+            let caching_store = Arc::new(CachingObjectStore::new(base_store, page_cache));
+            runtime_env.register_object_store(
+                &Url::parse("file://").unwrap(),
+                caching_store,
+            );
+            log_info!("[createGlobalRuntime] CachingObjectStore registered for file:// (Foyer page cache active)");
+        }
+    }
+
     let runtime = DataFusionRuntime {
         runtime_env,
         custom_cache_manager,
@@ -422,7 +442,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_registerO
 
     let runtime = unsafe { &*(runtime_ptr as *const DataFusionRuntime) };
 
-    let store: Arc<dyn object_store::ObjectStore> = unsafe {
+    let tiered_store: Arc<dyn object_store::ObjectStore> = unsafe {
         let fat_ptr: *const dyn object_store::ObjectStore = std::mem::transmute([
             obj_store_data_ptr as usize,
             obj_store_vtable_ptr as usize,
@@ -431,11 +451,25 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_registerO
         Arc::from_raw(fat_ptr)
     };
 
+    // If a Foyer page cache is configured, wrap TieredObjectStore with CachingObjectStore
+    // so that get_range / get_ranges calls are intercepted and cached.
+    // Without this wrapping, TieredObjectStore overwrites the CachingObjectStore registered
+    // in createGlobalRuntime, defeating the Foyer cache entirely.
+    let store_to_register: Arc<dyn object_store::ObjectStore> =
+        if let Some(page_cache) = runtime.custom_cache_manager.as_ref().and_then(|m| m.get_page_cache()) {
+            use crate::caching_object_store::CachingObjectStore;
+            log_info!("[FOYER-PAGE-CACHE] registerObjectStore: wrapping TieredObjectStore with CachingObjectStore");
+            Arc::new(CachingObjectStore::new(tiered_store, page_cache))
+        } else {
+            log_info!("[registerObjectStore] no page cache — registering TieredObjectStore directly");
+            tiered_store
+        };
+
     runtime.runtime_env.register_object_store(
         &url::Url::parse("file://").unwrap(),
-        store,
+        store_to_register,
     );
-    log_info!("[registerObjectStore] registered TieredObjectStore for file:// scheme, data_ptr={}, vtable_ptr={}",
+    log_info!("[registerObjectStore] registered TieredObjectStore (+ Foyer cache if configured) for file:// scheme, data_ptr={}, vtable_ptr={}",
         obj_store_data_ptr, obj_store_vtable_ptr);
 }
 

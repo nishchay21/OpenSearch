@@ -21,6 +21,10 @@ import static org.opensearch.datafusion.search.cache.CacheSettings.METADATA_CACH
 import static org.opensearch.datafusion.search.cache.CacheSettings.STATISTICS_CACHE_ENABLED;
 import static org.opensearch.datafusion.search.cache.CacheSettings.STATISTICS_CACHE_EVICTION_TYPE;
 import static org.opensearch.datafusion.search.cache.CacheSettings.STATISTICS_CACHE_SIZE_LIMIT;
+import static org.opensearch.datafusion.search.cache.CacheSettings.PAGE_CACHE_ENABLED;
+import static org.opensearch.datafusion.search.cache.CacheSettings.PAGE_CACHE_SIZE_LIMIT;
+import static org.opensearch.datafusion.search.cache.CacheSettings.PAGE_CACHE_DISK_CAPACITY;
+import static org.opensearch.datafusion.search.cache.CacheSettings.PAGE_CACHE_DIR;
 
 /**
  * Utility class for cache initialization and configuration.
@@ -36,30 +40,25 @@ public final class CacheUtils {
      * Cache type enumeration with associated settings.
      */
     public enum CacheType {
-        METADATA(
-            "METADATA",
-            METADATA_CACHE_ENABLED,
-            METADATA_CACHE_SIZE_LIMIT,
-            METADATA_CACHE_EVICTION_TYPE
-        ),
+        METADATA("METADATA", METADATA_CACHE_ENABLED, METADATA_CACHE_SIZE_LIMIT),
+        STATISTICS("STATISTICS", STATISTICS_CACHE_ENABLED, STATISTICS_CACHE_SIZE_LIMIT),
 
-        STATISTICS("STATISTICS",STATISTICS_CACHE_ENABLED, STATISTICS_CACHE_SIZE_LIMIT,STATISTICS_CACHE_EVICTION_TYPE);
+        /**
+         * Cache Layer 3: Foyer hybrid (memory + disk) page cache for compressed Parquet byte ranges.
+         * L1 = memory (PAGE_CACHE_SIZE_LIMIT), L2 = disk (PAGE_CACHE_DISK_CAPACITY at PAGE_CACHE_DIR).
+         * The eviction string passed to Rust is encoded as: {@code "<disk_bytes>|<disk_dir>"}
+         * so that Rust's {@code parse_page_cache_params()} can unpack both L2 disk settings.
+         */
+        PAGES("PAGES", PAGE_CACHE_ENABLED, PAGE_CACHE_SIZE_LIMIT);
 
         private final String cacheTypeName;
         private final Setting<Boolean> enabledSetting;
         private final Setting<ByteSizeValue> sizeLimitSetting;
-        private final Setting<String> evictionTypeSetting;
 
-        CacheType(
-            String cacheTypeName,
-            Setting<Boolean> enabledSetting,
-            Setting<ByteSizeValue> sizeLimitSetting,
-            Setting<String> evictionTypeSetting
-        ) {
+        CacheType(String cacheTypeName, Setting<Boolean> enabledSetting, Setting<ByteSizeValue> sizeLimitSetting) {
             this.cacheTypeName = cacheTypeName;
             this.enabledSetting = enabledSetting;
             this.sizeLimitSetting = sizeLimitSetting;
-            this.evictionTypeSetting = evictionTypeSetting;
         }
 
         public boolean isEnabled(ClusterSettings clusterSettings) {
@@ -74,16 +73,8 @@ public final class CacheUtils {
             return sizeLimitSetting;
         }
 
-        public Setting<String> getEvictionTypeSetting() {
-            return evictionTypeSetting;
-        }
-
         public ByteSizeValue getSizeLimit(ClusterSettings clusterSettings) {
             return clusterSettings.get(sizeLimitSetting);
-        }
-
-        public String getEvictionType(ClusterSettings clusterSettings) {
-            return clusterSettings.get(evictionTypeSetting);
         }
 
         public String getCacheTypeName() {
@@ -93,28 +84,48 @@ public final class CacheUtils {
 
     /**
      * Creates and configures a CacheManagerConfig pointer with all enabled caches.
+     * For each cache type, calls NativeBridge.createCache() with the appropriate
+     * size and configuration string.
      *
      * @param clusterSettings OpenSearch cluster settings containing cache configuration
      */
     public static long createCacheConfig(ClusterSettings clusterSettings) {
-        logger.info("Initializing cache configuration");
+        logger.info("[FOYER-PAGE-CACHE] initializing cache configuration");
 
         long cacheManagerPtr = NativeBridge.createCustomCacheManager();
-        // Configure each enabled cache type
-        for (CacheType type : CacheType.values()) {
-            if (type.isEnabled(clusterSettings)) {
-                logger.info("Configuring {} cache: size={} bytes, eviction={}",
-                    type.getCacheTypeName(),
-                    type.getSizeLimit(clusterSettings).getBytes(),
-                    type.getEvictionType(clusterSettings));
 
-                NativeBridge.createCache(cacheManagerPtr, type.cacheTypeName, type.getSizeLimit(clusterSettings).getBytes(), type.getEvictionType(clusterSettings));
-           //     clusterSettings.addSettingsUpdateConsumer(type.sizeLimitSetting,(v) -> NativeBridge.cacheManagerUpdateSizeLimitForCacheType(cacheManagerPtr, CacheType.METADATA.getCacheTypeName(),v.getBytes()));
-            } else {
-                logger.debug("Cache type {} is disabled", type.getCacheTypeName());
-            }
+        // METADATA cache (Layer 1: Parquet footer/schema)
+        if (CacheType.METADATA.isEnabled(clusterSettings)) {
+            long size = CacheType.METADATA.getSizeLimit(clusterSettings).getBytes();
+            String eviction = clusterSettings.get(CacheSettings.METADATA_CACHE_EVICTION_TYPE);
+            logger.info("[CACHE INFO] Configuring METADATA cache: size={}B, eviction={}", size, eviction);
+            NativeBridge.createCache(cacheManagerPtr, "METADATA", size, eviction);
         }
-        logger.info("Cache configuration completed");
+
+        // STATISTICS cache (Layer 2: row counts, min/max)
+        if (CacheType.STATISTICS.isEnabled(clusterSettings)) {
+            long size = CacheType.STATISTICS.getSizeLimit(clusterSettings).getBytes();
+            String eviction = clusterSettings.get(CacheSettings.STATISTICS_CACHE_EVICTION_TYPE);
+            logger.info("[CACHE INFO] Configuring STATISTICS cache: size={}B, eviction={}", size, eviction);
+            NativeBridge.createCache(cacheManagerPtr, "STATISTICS", size, eviction);
+        }
+
+        // PAGES cache (Layer 3: Foyer hybrid memory+disk byte range cache)
+        if (CacheType.PAGES.isEnabled(clusterSettings)) {
+            long memBytes  = clusterSettings.get(PAGE_CACHE_SIZE_LIMIT).getBytes();
+            long diskBytes = clusterSettings.get(PAGE_CACHE_DISK_CAPACITY).getBytes();
+            String diskDir = clusterSettings.get(PAGE_CACHE_DIR);
+            // Encode disk settings into the eviction_type string: "<disk_bytes>|<disk_dir>"
+            // Rust's parse_page_cache_params() reads this format.
+            String evictionEncoded = diskBytes + "|" + diskDir;
+            logger.info(
+                "[FOYER-PAGE-CACHE] Configuring PAGES cache: L1-mem={}B, L2-disk={}B, dir={}, encoded={}",
+                memBytes, diskBytes, diskDir, evictionEncoded
+            );
+            NativeBridge.createCache(cacheManagerPtr, "PAGES", memBytes, evictionEncoded);
+        }
+
+        logger.info("[FOYER-PAGE-CACHE] cache configuration completed");
         return cacheManagerPtr;
     }
 }

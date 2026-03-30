@@ -68,6 +68,12 @@ url = { workspace = true }
 # Liquid Cache for byte-level caching
 liquid-cache-datafusion-local = { workspace = true }
 
+# Foyer hybrid in-memory+disk cache for Parquet page caching
+foyer = { workspace = true }
+
+# serde_bytes: efficient Bytes serialization needed for Foyer's StorageValue bound
+serde_bytes = "0.11"
+
 # Substrait support
 substrait = { workspace = true }
 

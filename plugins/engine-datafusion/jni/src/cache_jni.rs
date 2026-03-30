@@ -1,5 +1,5 @@
-use jni::objects::{JClass, JObjectArray, JString};
-use jni::sys::jlong;
+use jni::objects::{JByteArray, JClass, JObjectArray, JString};
+use jni::sys::{jbyteArray, jint, jlong};
 use jni::{JNIEnv};
 use crate::custom_cache_manager::CustomCacheManager;
 use crate::util::{parse_string_arr};
@@ -7,7 +7,34 @@ use crate::cache;
 use crate::DataFusionRuntime;
 use datafusion::execution::cache::cache_unit::DefaultFilesMetadataCache;
 use std::sync::Arc;
+use bytes::Bytes;
 use vectorized_exec_spi::{log_info, log_error, log_debug};
+
+// Default page cache budgets — overridden by Java settings via createCache()
+const DEFAULT_PAGE_CACHE_MEMORY_BYTES: usize = 256 * 1024 * 1024;        // 256 MB L1 memory
+const DEFAULT_PAGE_CACHE_DISK_BYTES:   usize = 10 * 1024 * 1024 * 1024;  // 10 GB L2 disk
+const DEFAULT_PAGE_CACHE_DIR: &str = "/tmp/foyer-page-cache";
+
+/// Parse the eviction_type string for PAGES cache type.
+/// Expected format: "<disk_capacity_bytes>|<disk_dir>"
+/// Falls back to defaults if the string is malformed (e.g. plain "LRU" from old Java code).
+fn parse_page_cache_params(eviction_str: &str) -> (usize, String) {
+    if let Some(sep) = eviction_str.find('|') {
+        let disk_bytes_str = &eviction_str[..sep];
+        let disk_dir = eviction_str[sep + 1..].to_string();
+        if let Ok(disk_bytes) = disk_bytes_str.parse::<usize>() {
+            let dir = if disk_dir.is_empty() { DEFAULT_PAGE_CACHE_DIR.to_string() } else { disk_dir };
+            return (disk_bytes, dir);
+        }
+    }
+    // Fallback: plain eviction type like "LRU" from legacy config
+    log_info!(
+        "[FOYER-PAGE-CACHE] eviction_type '{}' is not in '<disk_bytes>|<dir>' format; \
+         using defaults: disk={}B, dir={}",
+        eviction_str, DEFAULT_PAGE_CACHE_DISK_BYTES, DEFAULT_PAGE_CACHE_DIR
+    );
+    (DEFAULT_PAGE_CACHE_DISK_BYTES, DEFAULT_PAGE_CACHE_DIR.to_string())
+}
 
 /// Create a CustomCacheManager instance
 #[no_mangle]
@@ -88,6 +115,29 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_createCac
             ));
             manager.set_statistics_cache(stats_cache);
             log_info!("[CACHE INFO] Successfully created {} cache in CustomCacheManager", cache_type_str);
+        }
+        cache::CACHE_TYPE_PAGES => {
+            // Create Foyer hybrid (memory + disk) page cache — Cache Layer 3.
+            // `size_limit` is the L1 memory budget in bytes (e.g. 256 MB).
+            // The L2 disk budget and disk directory come from the Java settings
+            // PAGE_CACHE_DISK_CAPACITY and PAGE_CACHE_DIR; for this cache creation
+            // call they are passed via the eviction_type string as
+            // "<disk_bytes>|<disk_dir>".
+            // Format: eviction_type_str = "<disk_capacity_bytes>|<disk_dir_path>"
+            let (disk_bytes, disk_dir) = parse_page_cache_params(&eviction_type_str);
+            log_info!(
+                "[FOYER-PAGE-CACHE] creating hybrid page cache: L1-mem={}B, L2-disk={}B, dir={}",
+                size_limit, disk_bytes, disk_dir
+            );
+            let page_cache = Arc::new(crate::foyer_cache::FoyerDiskPageCache::new(
+                size_limit as usize,
+                disk_bytes,
+                disk_dir,
+            ));
+            manager.set_page_cache(page_cache);
+            log_info!(
+                "[FOYER-PAGE-CACHE] successfully created Foyer hybrid page cache in CustomCacheManager"
+            );
         }
         _ => {
             let msg = format!("Invalid cache type: {}", cache_type_str);
@@ -442,5 +492,130 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_cacheMana
             let _ = env.throw_new("org/opensearch/datafusion/DataFusionException", msg);
             false
         }
+    }
+}
+
+// ============================================================================
+// Foyer page cache JNI operations (Layer 3: Parquet byte range cache)
+// Called by DataFusionPlugin.FoyerCacheProvider implementation to serve
+// PassthroughCacheStrategy → FoyerParquetCacheStrategy in the tiered-storage module.
+// ============================================================================
+
+/// Look up a cached byte range for a Parquet file.
+/// Returns the cached bytes as a Java byte[], or null on cache miss.
+#[no_mangle]
+pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_foyerPageCacheGet(
+    mut env: JNIEnv,
+    _class: JClass,
+    runtime_ptr: jlong,
+    path: JString,
+    start: jint,
+    end: jint,
+) -> jbyteArray {
+    if runtime_ptr == 0 {
+        return std::ptr::null_mut();
+    }
+
+    let runtime = unsafe { &*(runtime_ptr as *const DataFusionRuntime) };
+    let path_str: String = match env.get_string(&path) {
+        Ok(s) => s.into(),
+        Err(_) => return std::ptr::null_mut(),
+    };
+
+    let page_cache = match runtime.custom_cache_manager.as_ref().and_then(|m| m.get_page_cache()) {
+        Some(c) => c,
+        None => return std::ptr::null_mut(),
+    };
+
+    // FoyerDiskPageCache.get() is async (disk I/O). Use get_blocking() since JNI is synchronous.
+    match page_cache.get_blocking(&path_str, start as usize, end as usize) {
+        Some(bytes) => {
+            log_debug!(
+                "[FOYER-PAGE-CACHE] JNI get HIT: path={}, range={}..{}, size={}B",
+                path_str, start, end, bytes.len()
+            );
+            match env.byte_array_from_slice(&bytes) {
+                Ok(arr) => arr.into_raw(),
+                Err(e) => {
+                    log_debug!("[FOYER-PAGE-CACHE] JNI get: failed to create Java byte[]: {}", e);
+                    std::ptr::null_mut()
+                }
+            }
+        }
+        None => {
+            log_debug!(
+                "[FOYER-PAGE-CACHE] JNI get MISS: path={}, range={}..{}",
+                path_str, start, end
+            );
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Store a byte range for a Parquet file in the Foyer page cache.
+#[no_mangle]
+pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_foyerPageCachePut(
+    mut env: JNIEnv,
+    _class: JClass,
+    runtime_ptr: jlong,
+    path: JString,
+    start: jint,
+    end: jint,
+    data: JByteArray,
+) {
+    if runtime_ptr == 0 {
+        return;
+    }
+
+    let runtime = unsafe { &*(runtime_ptr as *const DataFusionRuntime) };
+    let path_str: String = match env.get_string(&path) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            log_debug!("[FoyerCache] foyerPageCachePut: failed to convert path: {}", e);
+            return;
+        }
+    };
+
+    let page_cache = match runtime.custom_cache_manager.as_ref().and_then(|m| m.get_page_cache()) {
+        Some(c) => c,
+        None => return,
+    };
+
+    let bytes_vec: Vec<u8> = match env.convert_byte_array(data) {
+        Ok(v) => v,
+        Err(e) => {
+            log_debug!("[FoyerCache] foyerPageCachePut: failed to convert byte array: {}", e);
+            return;
+        }
+    };
+
+    page_cache.put(path_str, start as usize, end as usize, Bytes::from(bytes_vec));
+}
+
+/// Evict all cached byte ranges for a given Parquet file.
+/// Called when a file is deleted (merged/compacted/tiered out).
+#[no_mangle]
+pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_foyerPageCacheEvictFile(
+    mut env: JNIEnv,
+    _class: JClass,
+    runtime_ptr: jlong,
+    path: JString,
+) {
+    if runtime_ptr == 0 {
+        return;
+    }
+
+    let runtime = unsafe { &*(runtime_ptr as *const DataFusionRuntime) };
+    let path_str: String = match env.get_string(&path) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            log_debug!("[FoyerCache] foyerPageCacheEvictFile: failed to convert path: {}", e);
+            return;
+        }
+    };
+
+    if let Some(page_cache) = runtime.custom_cache_manager.as_ref().and_then(|m| m.get_page_cache()) {
+        page_cache.evict_file(&path_str);
+        log_debug!("[FoyerCache] evicted file from page cache: {}", path_str);
     }
 }

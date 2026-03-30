@@ -24,6 +24,7 @@ import org.opensearch.plugins.PluginsService;
 import org.opensearch.repositories.RepositoriesService;
 import org.opensearch.repositories.Repository;
 import org.opensearch.repositories.blobstore.BlobStoreRepository;
+import org.opensearch.vectorized.execution.jni.PageCacheProvider;
 
 import java.io.IOException;
 import java.util.function.Supplier;
@@ -50,13 +51,44 @@ public class TieredCompositeStoreDirectoryFactory implements CachedCompositeStor
 
     private final Supplier<RepositoriesService> repositoriesService;
     private final java.util.function.Function<String, Long> globalRegistryPtrResolver;
+    /**
+     * Supplier for the page cache provider.
+     * <p>
+     * Using a Supplier (rather than holding the provider directly) is critical: in Node.java,
+     * {@code getCachedCompositeStoreDirectoryFactories()} is called at line ~973, BEFORE
+     * {@code setPageCacheProvider()} is called at line ~1191. By capturing it as a Supplier,
+     * the actual provider is resolved lazily at shard creation time (the first call to
+     * {@code newDirectory()}), by which point the provider has already been set.
+     */
+    private final Supplier<PageCacheProvider> pageCacheProviderSupplier;
 
+    /**
+     * Constructor without Foyer cache (backward compatible).
+     * Uses PassthroughCacheStrategy for all formats.
+     */
     public TieredCompositeStoreDirectoryFactory(
         Supplier<RepositoriesService> repositoriesService,
         java.util.function.Function<String, Long> globalRegistryPtrResolver
     ) {
+        this(repositoriesService, globalRegistryPtrResolver, () -> null);
+    }
+
+    /**
+     * Constructor with lazy page cache provider supplier.
+     * <p>
+     * The supplier is called per-shard at {@code newDirectory()} time (not at factory construction
+     * time), so it correctly observes the provider value that was set after factory creation.
+     * When the supplier returns non-null for a shard's parquet format, {@link CachedParquetCacheStrategy}
+     * is used; otherwise {@link PassthroughCacheStrategy} is used.
+     */
+    public TieredCompositeStoreDirectoryFactory(
+        Supplier<RepositoriesService> repositoriesService,
+        java.util.function.Function<String, Long> globalRegistryPtrResolver,
+        Supplier<PageCacheProvider> pageCacheProviderSupplier
+    ) {
         this.repositoriesService = repositoriesService;
         this.globalRegistryPtrResolver = globalRegistryPtrResolver;
+        this.pageCacheProviderSupplier = pageCacheProviderSupplier;
     }
 
     @Override
@@ -82,12 +114,26 @@ public class TieredCompositeStoreDirectoryFactory implements CachedCompositeStor
             fileCache != null ? "present" : "null",
             remoteDirectory != null ? "present" : "null");
 
+        // Cache strategy factory:
+        //   "parquet" + Foyer available  → CachedParquetCacheStrategy (byte-range caching via Foyer)
+        //   "parquet" + no Foyer         → PassthroughCacheStrategy  (full remote read each time)
+        //   "lucene" / "metadata" / etc  → PassthroughCacheStrategy  (FieldCache will replace later)
+        // Resolved HERE (at shard creation time), not at factory construction time.
+        // This is why pageCacheProviderSupplier is a Supplier — the provider is set in Node.java
+        // AFTER getCachedCompositeStoreDirectoryFactories() is called.
+        final PageCacheProvider pageCache = this.pageCacheProviderSupplier.get();
         TieredCompositeStoreDirectory directory = new TieredCompositeStoreDirectory(
             indexSettings,
             pluginsService,
             shardId,
             shardPath,
-            (formatName, dirPathPrefix) -> new PassthroughCacheStrategy(formatName, remoteDirectory, registryPtr, dirPathPrefix),
+            (formatName, dirPathPrefix) -> {
+                if ("parquet".equals(formatName) && pageCache != null) {
+                    logger.debug("[TieredCompositeStoreDirectoryFactory] using CachedParquetCacheStrategy for format=parquet, shard={}", shardId);
+                    return new CachedParquetCacheStrategy(formatName, remoteDirectory, registryPtr, dirPathPrefix, pageCache);
+                }
+                return new PassthroughCacheStrategy(formatName, remoteDirectory, registryPtr, dirPathPrefix);
+            },
             registryPtr,
             remoteDataBlobPath,
             repositoryName,

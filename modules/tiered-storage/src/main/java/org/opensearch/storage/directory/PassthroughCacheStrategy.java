@@ -342,11 +342,22 @@ public class PassthroughCacheStrategy implements FormatCacheStrategy {
     }
 
     /**
+     * Package-visible alias so that {@link CachedParquetCacheStrategy} can reuse the same
+     * ref-counting wrapper for LOCAL reads without duplicating the logic.
+     */
+    static class RefCountedIndexInputPublic extends RefCountedIndexInput {
+        RefCountedIndexInputPublic(IndexInput delegate, String fileName, long registryPtr,
+                                    TieredCompositeStoreDirectory owningDirectory) {
+            super(delegate, fileName, registryPtr, owningDirectory);
+        }
+    }
+
+    /**
      * Wrapper that releases the read reference in the Rust FileRegistry when closed.
      * When the last reader closes (active_reads → 0) and the file is REMOTE-only,
      * triggers deferred local file deletion via the owning directory.
      */
-    private static class RefCountedIndexInput extends IndexInput {
+    static class RefCountedIndexInput extends IndexInput {
 
         private IndexInput delegate;
         private final String fileName;

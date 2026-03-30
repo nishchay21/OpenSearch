@@ -1178,6 +1178,23 @@ public class Node implements Closeable {
                 .findFirst()
                 .orElse(null);
 
+            // Discover PageCacheProvider from plugins (e.g. DataFusionPlugin) and wire it into
+            // any plugin implementing PageCacheAware (e.g. TieredStoragePlugin) so that
+            // CachedParquetCacheStrategy is used for parquet format files instead of
+            // PassthroughCacheStrategy (which re-fetches from S3 on every openIndexInput()).
+            // Uses PageCacheAware interface (in vectorized-exec-spi) to avoid a compile-time
+            // dependency on modules/tiered-storage from the server module.
+            org.opensearch.vectorized.execution.jni.PageCacheProvider pageCacheProvider =
+                pluginsService.filterPlugins(org.opensearch.vectorized.execution.jni.PageCacheProvider.class)
+                    .stream()
+                    .findFirst()
+                    .orElse(null);
+            if (pageCacheProvider != null) {
+                final org.opensearch.vectorized.execution.jni.PageCacheProvider pcp = pageCacheProvider;
+                pluginsService.filterPlugins(org.opensearch.vectorized.execution.jni.PageCacheAware.class)
+                    .forEach(p -> p.setPageCacheProvider(pcp));
+            }
+
             Collection<Object> dataSourceAwareComponents = pluginsService.filterPlugins(SearchEnginePlugin.class)
                 .stream()
                 .flatMap(
