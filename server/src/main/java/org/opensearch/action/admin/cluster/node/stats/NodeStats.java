@@ -51,6 +51,7 @@ import org.opensearch.index.SegmentReplicationRejectionStats;
 import org.opensearch.index.stats.IndexingPressureStats;
 import org.opensearch.index.stats.ShardIndexingPressureStats;
 import org.opensearch.index.store.remote.filecache.AggregateFileCacheStats;
+import org.opensearch.monitor.fs.DiskBudgetStats;
 import org.opensearch.indices.NodeIndicesStats;
 import org.opensearch.ingest.IngestStats;
 import org.opensearch.monitor.fs.FsInfo;
@@ -166,6 +167,9 @@ public class NodeStats extends BaseNodeResponse implements ToXContentFragment {
     @Nullable
     private RemoteStoreNodeStats remoteStoreNodeStats;
 
+    @Nullable
+    private DiskBudgetStats diskBudgetStats;
+
     public NodeStats(StreamInput in) throws IOException {
         super(in);
         timestamp = in.readVLong();
@@ -252,6 +256,9 @@ public class NodeStats extends BaseNodeResponse implements ToXContentFragment {
         } else {
             remoteStoreNodeStats = null;
         }
+        // DiskBudgetStats — not version-gated because this is a new experimental addition
+        // in a feature branch. In open-source it should be gated on a new version constant.
+        diskBudgetStats = in.readOptionalWriteable(DiskBudgetStats::new);
     }
 
     public NodeStats(
@@ -284,7 +291,8 @@ public class NodeStats extends BaseNodeResponse implements ToXContentFragment {
         @Nullable RepositoriesStats repositoriesStats,
         @Nullable AdmissionControlStats admissionControlStats,
         @Nullable NodeCacheStats nodeCacheStats,
-        @Nullable RemoteStoreNodeStats remoteStoreNodeStats
+        @Nullable RemoteStoreNodeStats remoteStoreNodeStats,
+        @Nullable DiskBudgetStats diskBudgetStats
     ) {
         super(node);
         this.timestamp = timestamp;
@@ -316,6 +324,7 @@ public class NodeStats extends BaseNodeResponse implements ToXContentFragment {
         this.admissionControlStats = admissionControlStats;
         this.nodeCacheStats = nodeCacheStats;
         this.remoteStoreNodeStats = remoteStoreNodeStats;
+        this.diskBudgetStats = diskBudgetStats;
     }
 
     public long getTimestamp() {
@@ -483,6 +492,11 @@ public class NodeStats extends BaseNodeResponse implements ToXContentFragment {
         return remoteStoreNodeStats;
     }
 
+    @Nullable
+    public DiskBudgetStats getDiskBudgetStats() {
+        return diskBudgetStats;
+    }
+
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         super.writeTo(out);
@@ -544,6 +558,7 @@ public class NodeStats extends BaseNodeResponse implements ToXContentFragment {
         if (out.getVersion().onOrAfter(Version.V_2_18_0)) {
             out.writeOptionalWriteable(remoteStoreNodeStats);
         }
+        out.writeOptionalWriteable(diskBudgetStats);
     }
 
     @Override
@@ -652,6 +667,9 @@ public class NodeStats extends BaseNodeResponse implements ToXContentFragment {
         }
         if (getRemoteStoreNodeStats() != null) {
             getRemoteStoreNodeStats().toXContent(builder, params);
+        }
+        if (getDiskBudgetStats() != null) {
+            getDiskBudgetStats().toXContent(builder, params);
         }
         return builder;
     }

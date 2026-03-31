@@ -246,6 +246,20 @@ impl FoyerDiskPageCache {
         self.memory_capacity_bytes
     }
 
+    /// Returns the cumulative bytes written to the Foyer L2 disk tier since cache creation.
+    ///
+    /// Note: Foyer 0.11.5 does not expose a "current occupancy" metric for the disk tier.
+    /// `DeviceStats::write_bytes` is the closest available proxy — it counts total bytes
+    /// flushed to disk and is monotonically increasing. It overestimates current usage
+    /// (evicted bytes are not subtracted) but is accurate enough for disk budget monitoring.
+    ///
+    /// Used by `DiskBudgetManager` via `foyerDiskUsageBytes()` JNI to populate
+    /// `disk_budget.format_cache.used_in_bytes` in `_nodes/stats`.
+    pub fn disk_usage_bytes(&self) -> usize {
+        use std::sync::atomic::Ordering;
+        self.inner.stats().write_bytes.load(Ordering::Relaxed)
+    }
+
     /// Returns the configured disk L2 capacity.
     pub fn disk_capacity_bytes(&self) -> usize {
         self.disk_capacity_bytes

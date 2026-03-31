@@ -592,6 +592,30 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_foyerPage
     page_cache.put(path_str, start as usize, end as usize, Bytes::from(bytes_vec));
 }
 
+/// Returns the number of bytes currently stored in Foyer's L2 disk tier.
+/// Mapped to: {@code NativeBridge.foyerDiskUsageBytes(long runtimePtr)}
+/// Used by {@code DiskBudgetManager.getStats()} to populate the
+/// {@code disk_budget.format_cache.used_in_bytes} field in {@code _nodes/stats}.
+#[no_mangle]
+pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_foyerDiskUsageBytes(
+    _env: JNIEnv,
+    _class: JClass,
+    runtime_ptr: jlong,
+) -> jlong {
+    if runtime_ptr == 0 {
+        return 0;
+    }
+    let runtime = unsafe { &*(runtime_ptr as *const DataFusionRuntime) };
+    match runtime.custom_cache_manager.as_ref().and_then(|m| m.get_page_cache()) {
+        Some(cache) => {
+            let bytes = cache.disk_usage_bytes() as jlong;
+            log_debug!("[FOYER-PAGE-CACHE] JNI foyerDiskUsageBytes: {}B", bytes);
+            bytes
+        }
+        None => 0,
+    }
+}
+
 /// Evict all cached byte ranges for a given Parquet file.
 /// Called when a file is deleted (merged/compacted/tiered out).
 #[no_mangle]
