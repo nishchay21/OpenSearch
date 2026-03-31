@@ -121,6 +121,15 @@ public final class NativeBridge {
      */
     public static native void foyerPageCacheEvictFile(long runtimePtr, String path);
 
+    /**
+     * Returns the number of bytes currently stored in Foyer's L2 disk tier.
+     * Used by {@code DiskBudgetManager} to report format-cache disk usage in {@code _nodes/stats}.
+     *
+     * @param runtimePtr the DataFusion runtime pointer
+     * @return disk bytes in use by the Foyer page cache, or 0 if unavailable
+     */
+    public static native long foyerDiskUsageBytes(long runtimePtr);
+
 
     // Logger initialization
     public static native void initLogger();

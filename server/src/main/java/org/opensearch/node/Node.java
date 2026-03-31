@@ -1567,6 +1567,22 @@ public class Node implements Closeable {
                 taskCancellationMonitoringSettings
             );
 
+            // Create DiskBudgetManager for warm nodes to track and validate SSD budgets.
+            // pageCacheProvider was discovered and wired above; fileCache was initialized above.
+            org.opensearch.monitor.fs.DiskBudgetManager diskBudgetManager = null;
+            if (DiscoveryNode.isWarmNode(settings)) {
+                // Read the configured format-cache disk budget from settings (0 = disabled)
+                long formatCacheDiskBytes = settings.getAsBytesSize(
+                    "format_cache.disk.total_budget",
+                    org.opensearch.core.common.unit.ByteSizeValue.ZERO
+                ).getBytes();
+                diskBudgetManager = new org.opensearch.monitor.fs.DiskBudgetManager(fileCache, formatCacheDiskBytes);
+                if (pageCacheProvider != null) {
+                    diskBudgetManager.setPageCacheProvider(pageCacheProvider);
+                }
+                diskBudgetManager.validateAtStartup();
+            }
+
             this.nodeService = new NodeService(
                 settings,
                 threadPool,
@@ -1593,7 +1609,8 @@ public class Node implements Closeable {
                 segmentReplicationStatsTracker,
                 repositoryService,
                 admissionControlService,
-                cacheService
+                cacheService,
+                diskBudgetManager
             );
 
             if (FeatureFlags.isEnabled(ARROW_STREAMS_SETTING)) {

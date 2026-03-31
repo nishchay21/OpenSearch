@@ -307,6 +307,28 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEngi
     // Called by CachedParquetCacheStrategy in the tiered-storage module.
 
     @Override
+    public long getDiskUsageBytes() {
+        if (dataFusionService == null) return 0L;
+        long runtimePtr = dataFusionService.getRuntimePointer();
+        if (runtimePtr == 0) return 0L;
+        try {
+            // The JNI method returns the actual bytes used in Foyer's L2 disk tier.
+            return org.opensearch.datafusion.jni.NativeBridge.foyerDiskUsageBytes(runtimePtr);
+        } catch (UnsatisfiedLinkError e) {
+            // Rust implementation not yet available in this build — return 0 safely.
+            // This prevents _nodes/stats from crashing the node.
+            return 0L;
+        }
+    }
+
+    @Override
+    public long getDiskCapacityBytes() {
+        if (dataFusionService == null) return 0L;
+        // Return the configured Foyer disk capacity from the cache manager.
+        return dataFusionService.getFormatCacheDiskCapacityBytes();
+    }
+
+    @Override
     public byte[] getPageRange(String path, int start, int end) {
         if (dataFusionService == null) return null;
         long runtimePtr = dataFusionService.getRuntimePointer();

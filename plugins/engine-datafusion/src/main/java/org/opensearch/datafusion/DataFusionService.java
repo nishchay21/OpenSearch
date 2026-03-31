@@ -30,6 +30,7 @@ public class DataFusionService extends AbstractLifecycleComponent {
 
     private final DataSourceRegistry dataSourceRegistry;
     private final DataFusionRuntimeEnv runtimeEnv;
+    private final ClusterService clusterService;
     private volatile NativeObjectStoreProvider nativeObjectStoreProvider;
     private volatile boolean objectStoreRegistered = false;
 
@@ -39,6 +40,7 @@ public class DataFusionService extends AbstractLifecycleComponent {
      */
     public DataFusionService(Map<DataFormat, DataSourceCodec> dataSourceCodecs, ClusterService clusterService, String spill_dir) {
         this.dataSourceRegistry = new DataSourceRegistry(dataSourceCodecs);
+        this.clusterService = clusterService;
 
         // to verify jni
         String version = NativeBridge.getVersionInfo();
@@ -151,5 +153,22 @@ public class DataFusionService extends AbstractLifecycleComponent {
 
     public CacheManager getCacheManager() {
         return runtimeEnv.getCacheManager();
+    }
+
+    /**
+     * Returns the configured disk capacity for the format (page) cache disk tier in bytes.
+     * Reads {@code datafusion.page.cache.disk.capacity} from the cluster settings.
+     * Used by {@code DiskBudgetManager} for startup validation and stats reporting.
+     *
+     * @return configured disk capacity in bytes, or {@code 0} if the format cache is disabled
+     */
+    public long getFormatCacheDiskCapacityBytes() {
+        try {
+            return clusterService.getClusterSettings()
+                .get(org.opensearch.datafusion.search.cache.CacheSettings.PAGE_CACHE_DISK_CAPACITY)
+                .getBytes();
+        } catch (Exception e) {
+            return 0L;
+        }
     }
 }

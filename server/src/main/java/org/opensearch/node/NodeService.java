@@ -54,6 +54,8 @@ import org.opensearch.index.store.remote.filecache.FileCache;
 import org.opensearch.indices.IndicesService;
 import org.opensearch.ingest.IngestService;
 import org.opensearch.monitor.MonitorService;
+import org.opensearch.monitor.fs.DiskBudgetManager;
+import org.opensearch.monitor.fs.DiskBudgetStats;
 import org.opensearch.node.remotestore.RemoteStoreNodeStats;
 import org.opensearch.plugins.PluginsService;
 import org.opensearch.ratelimitting.admissioncontrol.AdmissionControlService;
@@ -102,6 +104,8 @@ public class NodeService implements Closeable {
     private final AdmissionControlService admissionControlService;
     private final SegmentReplicationStatsTracker segmentReplicationStatsTracker;
     private final CacheService cacheService;
+    @Nullable
+    private final DiskBudgetManager diskBudgetManager;
 
     NodeService(
         Settings settings,
@@ -129,7 +133,8 @@ public class NodeService implements Closeable {
         SegmentReplicationStatsTracker segmentReplicationStatsTracker,
         RepositoriesService repositoriesService,
         AdmissionControlService admissionControlService,
-        CacheService cacheService
+        CacheService cacheService,
+        @Nullable DiskBudgetManager diskBudgetManager
     ) {
         this.settings = settings;
         this.threadPool = threadPool;
@@ -159,6 +164,7 @@ public class NodeService implements Closeable {
         clusterService.addStateApplier(searchPipelineService);
         this.segmentReplicationStatsTracker = segmentReplicationStatsTracker;
         this.cacheService = cacheService;
+        this.diskBudgetManager = diskBudgetManager;
     }
 
     public NodeInfo info(
@@ -277,7 +283,8 @@ public class NodeService implements Closeable {
             repositoriesStats ? this.repositoriesService.getRepositoriesStats() : null,
             admissionControl ? this.admissionControlService.stats() : null,
             cacheService ? this.cacheService.stats(indices) : null,
-            remoteStoreNodeStats ? new RemoteStoreNodeStats() : null
+            remoteStoreNodeStats ? new RemoteStoreNodeStats() : null,
+            diskBudgetManager != null ? diskBudgetManager.getStats() : null
         );
     }
 

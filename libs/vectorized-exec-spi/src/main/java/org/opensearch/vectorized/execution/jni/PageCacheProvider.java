@@ -50,4 +50,29 @@ public interface PageCacheProvider {
      * @param path the local file path whose cached ranges should be removed
      */
     void evictFile(String path);
+
+    /**
+     * Returns the number of bytes currently stored in the page cache's disk tier (L2).
+     * Used by {@code DiskBudgetManager} to aggregate disk usage across all SSD consumers.
+     * <p>
+     * Default implementation returns {@code 0} so existing implementors are not broken.
+     *
+     * @return disk bytes currently in use by the page cache, or {@code 0} if unknown
+     */
+    default long getDiskUsageBytes() {
+        return 0L;
+    }
+
+    /**
+     * Returns the configured disk capacity of the page cache's disk tier (L2).
+     * Used by {@code DiskBudgetManager} to validate that total cache budgets do not
+     * exceed available SSD space at node startup.
+     * <p>
+     * Default implementation returns {@code 0} so existing implementors are not broken.
+     *
+     * @return disk capacity configured for the page cache in bytes, or {@code 0} if disabled
+     */
+    default long getDiskCapacityBytes() {
+        return 0L;
+    }
 }
