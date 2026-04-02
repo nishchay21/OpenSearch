@@ -26,8 +26,8 @@ public final class TieredStoreNativeBridgeImpl implements TieredStoreNativeBridg
     }
 
     @Override
-    public long[] createTieredObjectStore() {
-        return nativeCreateTieredObjectStore();
+    public long[] createTieredObjectStore(long diskCacheBytes, String diskCacheDir) {
+        return nativeCreateTieredObjectStore(diskCacheBytes, diskCacheDir);
     }
 
     @Override
@@ -118,7 +118,7 @@ public final class TieredStoreNativeBridgeImpl implements TieredStoreNativeBridg
     // --- Native method declarations (resolved from DataFusion's .so) ---
 
     private static native void nativeInitLogger();
-    private static native long[] nativeCreateTieredObjectStore();
+    private static native long[] nativeCreateTieredObjectStore(long diskCacheBytes, String diskCacheDir);
     private static native void nativeAddRemoteStore(long registryPtr, String repoKey, String storeType, String configJson);
     private static native void nativeDestroyTieredObjectStore(long dataPtr, long vtablePtr);
     private static native void nativeDestroyFileRegistry(long registryPtr);

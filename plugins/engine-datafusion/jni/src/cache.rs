@@ -7,11 +7,13 @@ use datafusion::execution::cache::CacheAccessor;
 use object_store::ObjectMeta;
 use vectorized_exec_spi::log_error;
 
-pub const ALL_CACHE_TYPES: &[&str] = &[CACHE_TYPE_METADATA, CACHE_TYPE_STATS];
+pub const ALL_CACHE_TYPES: &[&str] = &[CACHE_TYPE_METADATA, CACHE_TYPE_STATS, CACHE_TYPE_PAGES];
 
 // Cache type constants
 pub const CACHE_TYPE_METADATA: &str = "METADATA";
 pub const CACHE_TYPE_STATS: &str = "STATISTICS";
+/// Foyer-backed byte-level page cache for Parquet column chunk data (Cache Layer 3)
+pub const CACHE_TYPE_PAGES: &str = "PAGES";
 
 // Helper function to handle cache errors
 #[allow(dead_code)]
