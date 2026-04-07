@@ -6,11 +6,11 @@
  * compatible open source license.
  */
 
-//! Tiered storage JNI crate — DEPRECATED.
-//!
-//! TieredObjectStore, FileRegistry, RemoteObjectStore, and all JNI functions
-//! have been moved into DataFusion's .so (plugins/engine-datafusion/jni/src/tiered/)
-//! to avoid cross-.so allocator mismatch (SIGSEGV in mi_free_generic_mt).
-//!
-//! This crate is kept as a placeholder. It can be removed once the build
-//! system no longer references it.
+//! Tiered storage crate — TieredObjectStore, FileRegistry, RemoteObjectStore,
+//! store factory, and JNI bridge functions.
+
+pub mod file_registry;
+pub mod remote_object_store;
+pub mod store_factory;
+pub mod tiered_object_store;
+pub mod jni_bridge;

@@ -11,7 +11,7 @@ use object_store::{ObjectMeta, ObjectStore};
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use vectorized_exec_spi::log_info;
+use vectorized_exec_spi::{log_debug, log_info};
 
 /// Where a file is known to exist.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,12 +101,16 @@ impl FileRegistry {
 
     /// Register a remote store for a given repository key. Idempotent.
     pub fn add_remote_store(&self, repo_key: &str, store: Arc<dyn ObjectStore>) {
-        if self.remote_stores.contains_key(repo_key) {
-            log_info!("[FileRegistry] add_remote_store: repo_key={} already registered, skipping", repo_key);
-            return;
+        use dashmap::mapref::entry::Entry;
+        match self.remote_stores.entry(repo_key.to_string()) {
+            Entry::Occupied(_) => {
+                log_info!("[FileRegistry] add_remote_store: repo_key={} already registered, skipping", repo_key);
+            }
+            Entry::Vacant(vacant) => {
+                log_info!("[FileRegistry] add_remote_store: repo_key={}", repo_key);
+                vacant.insert(store);
+            }
         }
-        log_info!("[FileRegistry] add_remote_store: repo_key={}", repo_key);
-        self.remote_stores.insert(repo_key.to_string(), store);
     }
 
     /// Get the remote store for a file by looking up its repo_key.
@@ -125,7 +129,7 @@ impl FileRegistry {
         if let Some(mut entry) = self.entries.get_mut(key) {
             Self::upgrade_location(&mut entry.location, &FileLocation::Local);
         } else {
-            log_info!("[FileRegistry] register_local: path={}, size={}", key, size);
+            log_debug!("[FileRegistry] register_local: path={}, size={}", key, size);
             self.entries.insert(key.to_string(), FileEntry {
                 local_path: key.to_string(),
                 remote_path: None,
@@ -143,10 +147,10 @@ impl FileRegistry {
             entry.remote_path = Some(remote_path.to_string());
             entry.repo_key = Some(repo_key.to_string());
             Self::upgrade_location(&mut entry.location, &FileLocation::Remote);
-            log_info!("[FileRegistry] mark_synced_to_remote: path={}, remote={}, repo={}, loc={}",
+            log_debug!("[FileRegistry] mark_synced_to_remote: path={}, remote={}, repo={}, loc={}",
                 key, remote_path, repo_key, entry.location);
         } else {
-            log_info!("[FileRegistry] mark_synced_to_remote (new): path={}, remote={}, repo={}", key, remote_path, repo_key);
+            log_debug!("[FileRegistry] mark_synced_to_remote (new): path={}, remote={}, repo={}", key, remote_path, repo_key);
             self.entries.insert(key.to_string(), FileEntry {
                 local_path: key.to_string(),
                 remote_path: Some(remote_path.to_string()),
@@ -182,33 +186,34 @@ impl FileRegistry {
     }
 
     pub fn acquire_read(&self, key: &str) -> FileLocation {
-        if let Some(entry) = self.entries.get(key) {
-            entry.total_reads.fetch_add(1, Ordering::Relaxed);
-            let refs = entry.active_reads.fetch_add(1, Ordering::Relaxed) + 1;
-            log_info!("[FileRegistry] acquire_read: path={}, active_reads={}, loc={}", key, refs, entry.location);
-            entry.location.clone()
-        } else {
-            self.entries.insert(key.to_string(), FileEntry {
+        let entry = self.entries.entry(key.to_string()).or_insert_with(|| {
+            log_info!("[FileRegistry] acquire_read (auto-register REMOTE): path={}", key);
+            FileEntry {
                 local_path: key.to_string(),
                 remote_path: None,
                 repo_key: None,
                 location: FileLocation::Remote,
-                active_reads: AtomicI64::new(1),
-                total_reads: AtomicU64::new(1),
+                active_reads: AtomicI64::new(0),
+                total_reads: AtomicU64::new(0),
                 size: 0,
-            });
-            log_info!("[FileRegistry] acquire_read (auto-register REMOTE): path={}", key);
-            FileLocation::Remote
-        }
+            }
+        });
+        entry.total_reads.fetch_add(1, Ordering::Relaxed);
+        let refs = entry.active_reads.fetch_add(1, Ordering::Relaxed) + 1;
+        log_debug!("[FileRegistry] acquire_read: path={}, active_reads={}, loc={}", key, refs, entry.location);
+        entry.location.clone()
     }
 
     pub fn release_read(&self, key: &str) -> i64 {
         if let Some(entry) = self.entries.get(key) {
             let remaining = entry.active_reads.fetch_sub(1, Ordering::Relaxed) - 1;
             if remaining < 0 {
-                log_info!("[FileRegistry] release_read WARNING: negative active_reads={} for path={}", remaining, key);
+                // Clamp to 0 — don't let it go negative
+                entry.active_reads.store(0, Ordering::Relaxed);
+                log_info!("[FileRegistry] release_read WARNING: clamped negative active_reads to 0 for path={}", key);
+                return 0;
             }
-            log_info!("[FileRegistry] release_read: path={}, active_reads={}", key, remaining);
+            log_debug!("[FileRegistry] release_read: path={}, active_reads={}", key, remaining);
             remaining
         } else {
             log_info!("[FileRegistry] release_read WARNING: unknown file path={}", key);
@@ -235,6 +240,15 @@ impl FileRegistry {
 
     pub fn get_remote_path(&self, key: &str) -> Option<String> {
         self.entries.get(key).and_then(|e| e.remote_path.clone())
+    }
+
+    /// Get remote path and remote store in a single lookup (avoids two DashMap lookups).
+    pub fn get_remote_info(&self, key: &str) -> Option<(String, Arc<dyn ObjectStore>)> {
+        let entry = self.entries.get(key)?;
+        let remote_path = entry.remote_path.as_ref()?.clone();
+        let repo_key = entry.repo_key.as_ref()?;
+        let store = self.remote_stores.get(repo_key).map(|s| Arc::clone(s.value()))?;
+        Some((remote_path, store))
     }
 
     pub fn get_location(&self, key: &str) -> Option<FileLocation> {
@@ -278,51 +292,41 @@ impl FileRegistry {
     /// Returns the number of files successfully deleted.
     pub fn sweep_pending_deletes(&self) -> u32 {
         let mut deleted = 0u32;
-        let mut to_remove: Vec<String> = Vec::new();
-
-        for entry in self.pending_local_deletes.iter() {
-            let local_path = entry.key();
-            // Registry key is the path without leading "/"
+        self.pending_local_deletes.retain(|local_path, _| {
             let registry_key = if local_path.starts_with('/') {
                 &local_path[1..]
             } else {
                 local_path.as_str()
             };
 
-            // Check if file is still REMOTE-only and has no active readers
             let can_delete = self.entries.get(registry_key)
                 .map(|e| {
                     e.location == FileLocation::Remote
                         && e.active_reads.load(Ordering::Relaxed) == 0
                 })
-                .unwrap_or(true); // If entry is gone, remove from pending
+                .unwrap_or(true);
 
             if !can_delete {
-                continue;
+                return true; // keep in pending
             }
 
             let path = std::path::Path::new(local_path.as_str());
             if !path.exists() {
-                // Already gone — remove from pending
-                to_remove.push(local_path.clone());
-                continue;
+                return false; // remove from pending
             }
 
             match std::fs::remove_file(path) {
                 Ok(()) => {
                     log_info!("[FileRegistry] sweep_pending_deletes: deleted {}", local_path);
-                    to_remove.push(local_path.clone());
                     deleted += 1;
+                    false // remove from pending
                 }
                 Err(e) => {
                     log_info!("[FileRegistry] sweep_pending_deletes: failed to delete {}: {}", local_path, e);
+                    true // keep in pending
                 }
             }
-        }
-
-        for key in to_remove {
-            self.pending_local_deletes.remove(&key);
-        }
+        });
 
         if deleted > 0 {
             log_info!("[FileRegistry] sweep_pending_deletes: deleted {} files, {} still pending",

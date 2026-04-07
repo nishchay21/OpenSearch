@@ -53,6 +53,8 @@ log ={ workspace = true }
 
 # Shared OpenSearch utilities
 vectorized-exec-spi = { path = "../../../libs/vectorized-exec-spi/rust" }
+# Tiered storage (FileRegistry, TieredObjectStore, etc.)
+opensearch-tiered-storage = { path = "../../../modules/tiered-storage/jni" }
 
 # Parquet support
 parquet = { workspace = true }

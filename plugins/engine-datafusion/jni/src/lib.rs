@@ -40,7 +40,10 @@ mod absolute_row_id_optimizer;
 mod listing_table;
 mod cache;
 mod custom_cache_manager;
-mod tiered;
+// Force-link the tiered-storage crate so its #[no_mangle] JNI symbols
+// are included in this cdylib. Without `extern crate`, the linker would
+// discard the symbols since nothing in this crate references them directly.
+extern crate opensearch_tiered_storage;
 mod memory;
 mod cross_rt_stream;
 mod executor;

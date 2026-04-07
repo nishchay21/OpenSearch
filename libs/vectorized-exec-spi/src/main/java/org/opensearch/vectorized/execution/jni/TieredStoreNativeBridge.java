@@ -13,9 +13,8 @@ package org.opensearch.vectorized.execution.jni;
  * and FileRegistry management.
  * <p>
  * Implemented by the plugin that owns the native library (DataFusion).
- * The implementation is registered via {@link SharedNativeLibrary} during
- * plugin initialization and retrieved by the tiered-storage module at
- * shard creation time.
+ * The implementation is discovered via {@link java.util.ServiceLoader}
+ * and registered in {@link SharedNativeLibrary} under {@link #REGISTRY_KEY}.
  * <p>
  * This interface lives in the shared SPI so both plugins can reference
  * it without classloader visibility issues.

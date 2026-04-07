@@ -145,6 +145,7 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEngi
         for(DataFormat format : this.getSupportedFormats()) {
             dataSourceCodecs.get(format);
         }
+
         return Collections.singletonList(dataFusionService);
     }
 

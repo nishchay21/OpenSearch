@@ -24,8 +24,10 @@ public final class NativeBridge {
     static {
         NativeLibraryLoader.load("opensearch_datafusion_jni");
         initLogger();
-        // Register the tiered storage bridge so other plugins can call
-        // tiered-storage native methods through this classloader's .so
+        initChildNatives();
+    }
+
+    private static void initChildNatives() {
         SharedNativeLibrary.register(
             TieredStoreNativeBridge.REGISTRY_KEY,
             new TieredStoreNativeBridgeImpl()

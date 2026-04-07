@@ -17,11 +17,6 @@
 //! classloader. The tiered-storage module calls through the shared
 //! `TieredStoreNativeBridge` interface, which dispatches here.
 
-pub mod file_registry;
-pub mod remote_object_store;
-pub mod store_factory;
-pub mod tiered_object_store;
-
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
 use jni::sys::{jint, jlong, jlongArray};
@@ -29,13 +24,16 @@ use object_store::ObjectStore;
 use std::sync::Arc;
 use vectorized_exec_spi::log_info;
 
-use file_registry::FileRegistry;
-use tiered_object_store::TieredObjectStore;
+use crate::file_registry;
+use crate::file_registry::FileRegistry;
+use crate::store_factory;
+use crate::tiered_object_store::TieredObjectStore;
 
 // ---------------------------------------------------------------------------
 // Helper: reconstruct Arc<FileRegistry> from raw pointer WITHOUT dropping it.
 // ---------------------------------------------------------------------------
 unsafe fn registry_from_ptr(ptr: jlong) -> Arc<FileRegistry> {
+    assert!(ptr != 0, "FileRegistry pointer is null");
     let raw = ptr as *const FileRegistry;
     Arc::increment_strong_count(raw);
     Arc::from_raw(raw)
@@ -96,6 +94,10 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridg
     mut env: JNIEnv, _class: JClass, registry_ptr: jlong, repo_key: JString,
     store_type: JString, config_json: JString,
 ) {
+    if registry_ptr == 0 {
+        let _ = env.throw_new("java/lang/NullPointerException", "registry_ptr is null");
+        return;
+    }
     let registry = unsafe { registry_from_ptr(registry_ptr) };
     let repo_key_str: String = match env.get_string(&repo_key) {
         Ok(s) => s.into(),
@@ -164,6 +166,10 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridg
 pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridgeImpl_nativeRegistryMarkSyncedToRemote(
     mut env: JNIEnv, _class: JClass, registry_ptr: jlong, key: JString, remote_path: JString, repo_key: JString,
 ) {
+    if registry_ptr == 0 {
+        let _ = env.throw_new("java/lang/NullPointerException", "registry_ptr is null");
+        return;
+    }
     let registry = unsafe { registry_from_ptr(registry_ptr) };
     let key_str: String = env.get_string(&key).unwrap().into();
     let remote_str: String = env.get_string(&remote_path).unwrap().into();
@@ -175,6 +181,10 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridg
 pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridgeImpl_nativeRegistryRegisterLocal(
     mut env: JNIEnv, _class: JClass, registry_ptr: jlong, key: JString, size: jlong,
 ) {
+    if registry_ptr == 0 {
+        let _ = env.throw_new("java/lang/NullPointerException", "registry_ptr is null");
+        return;
+    }
     let registry = unsafe { registry_from_ptr(registry_ptr) };
     let key_str: String = env.get_string(&key).unwrap().into();
     registry.register_local(&key_str, size as u64);
@@ -184,6 +194,10 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridg
 pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridgeImpl_nativeRegistryAcquireRead(
     mut env: JNIEnv, _class: JClass, registry_ptr: jlong, key: JString,
 ) -> jint {
+    if registry_ptr == 0 {
+        let _ = env.throw_new("java/lang/NullPointerException", "registry_ptr is null");
+        return -1;
+    }
     let registry = unsafe { registry_from_ptr(registry_ptr) };
     let key_str: String = env.get_string(&key).unwrap().into();
     let loc = registry.acquire_read(&key_str);
@@ -198,6 +212,10 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridg
 pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridgeImpl_nativeRegistryReleaseRead(
     mut env: JNIEnv, _class: JClass, registry_ptr: jlong, key: JString,
 ) -> jint {
+    if registry_ptr == 0 {
+        let _ = env.throw_new("java/lang/NullPointerException", "registry_ptr is null");
+        return 0;
+    }
     let registry = unsafe { registry_from_ptr(registry_ptr) };
     let key_str: String = env.get_string(&key).unwrap().into();
     registry.release_read(&key_str) as jint
@@ -207,6 +225,10 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridg
 pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridgeImpl_nativeRegistryRemove(
     mut env: JNIEnv, _class: JClass, registry_ptr: jlong, key: JString,
 ) {
+    if registry_ptr == 0 {
+        let _ = env.throw_new("java/lang/NullPointerException", "registry_ptr is null");
+        return;
+    }
     let registry = unsafe { registry_from_ptr(registry_ptr) };
     let key_str: String = env.get_string(&key).unwrap().into();
     registry.remove(&key_str);
@@ -216,6 +238,10 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridg
 pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridgeImpl_nativeRegistryMarkLocalDeleted(
     mut env: JNIEnv, _class: JClass, registry_ptr: jlong, key: JString,
 ) {
+    if registry_ptr == 0 {
+        let _ = env.throw_new("java/lang/NullPointerException", "registry_ptr is null");
+        return;
+    }
     let registry = unsafe { registry_from_ptr(registry_ptr) };
     let key_str: String = env.get_string(&key).unwrap().into();
     registry.mark_local_deleted(&key_str);
@@ -223,16 +249,24 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridg
 
 #[no_mangle]
 pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridgeImpl_nativeRegistryFileCount(
-    _env: JNIEnv, _class: JClass, registry_ptr: jlong,
+    mut env: JNIEnv, _class: JClass, registry_ptr: jlong,
 ) -> jint {
+    if registry_ptr == 0 {
+        let _ = env.throw_new("java/lang/NullPointerException", "registry_ptr is null");
+        return 0;
+    }
     let registry = unsafe { registry_from_ptr(registry_ptr) };
     registry.file_count() as jint
 }
 
 #[no_mangle]
 pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridgeImpl_nativeRegistryLogSummary(
-    _env: JNIEnv, _class: JClass, registry_ptr: jlong,
+    mut env: JNIEnv, _class: JClass, registry_ptr: jlong,
 ) {
+    if registry_ptr == 0 {
+        let _ = env.throw_new("java/lang/NullPointerException", "registry_ptr is null");
+        return;
+    }
     let registry = unsafe { registry_from_ptr(registry_ptr) };
     registry.log_summary();
 }
@@ -241,6 +275,10 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridg
 pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridgeImpl_nativeRegistryGetLocation(
     mut env: JNIEnv, _class: JClass, registry_ptr: jlong, key: JString,
 ) -> jint {
+    if registry_ptr == 0 {
+        let _ = env.throw_new("java/lang/NullPointerException", "registry_ptr is null");
+        return -1;
+    }
     let registry = unsafe { registry_from_ptr(registry_ptr) };
     let key_str: String = env.get_string(&key).unwrap().into();
     match registry.get_location(&key_str) {
@@ -255,6 +293,10 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridg
 pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridgeImpl_nativeRegistryGetActiveReads(
     mut env: JNIEnv, _class: JClass, registry_ptr: jlong, key: JString,
 ) -> jlong {
+    if registry_ptr == 0 {
+        let _ = env.throw_new("java/lang/NullPointerException", "registry_ptr is null");
+        return 0;
+    }
     let registry = unsafe { registry_from_ptr(registry_ptr) };
     let key_str: String = env.get_string(&key).unwrap().into();
     registry.get_active_reads(&key_str) as jlong
@@ -264,6 +306,10 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridg
 pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridgeImpl_nativeRegistryGetSize(
     mut env: JNIEnv, _class: JClass, registry_ptr: jlong, key: JString,
 ) -> jlong {
+    if registry_ptr == 0 {
+        let _ = env.throw_new("java/lang/NullPointerException", "registry_ptr is null");
+        return -1;
+    }
     let registry = unsafe { registry_from_ptr(registry_ptr) };
     let key_str: String = env.get_string(&key).unwrap().into();
     registry.get_size(&key_str).map(|s| s as jlong).unwrap_or(-1)
@@ -273,6 +319,10 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridg
 pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridgeImpl_nativeRegistryAddPendingDelete(
     mut env: JNIEnv, _class: JClass, registry_ptr: jlong, local_path: JString,
 ) {
+    if registry_ptr == 0 {
+        let _ = env.throw_new("java/lang/NullPointerException", "registry_ptr is null");
+        return;
+    }
     let registry = unsafe { registry_from_ptr(registry_ptr) };
     let path_str: String = env.get_string(&local_path).unwrap().into();
     registry.add_pending_delete(&path_str);
@@ -280,17 +330,24 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridg
 
 #[no_mangle]
 pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridgeImpl_nativeRegistrySweepPendingDeletes(
-    _env: JNIEnv, _class: JClass, registry_ptr: jlong,
+    mut env: JNIEnv, _class: JClass, registry_ptr: jlong,
 ) -> jint {
+    if registry_ptr == 0 {
+        let _ = env.throw_new("java/lang/NullPointerException", "registry_ptr is null");
+        return 0;
+    }
     let registry = unsafe { registry_from_ptr(registry_ptr) };
     registry.sweep_pending_deletes() as jint
 }
 
 #[no_mangle]
 pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridgeImpl_nativeRegistryPendingDeleteCount(
-    _env: JNIEnv, _class: JClass, registry_ptr: jlong,
+    mut env: JNIEnv, _class: JClass, registry_ptr: jlong,
 ) -> jint {
+    if registry_ptr == 0 {
+        let _ = env.throw_new("java/lang/NullPointerException", "registry_ptr is null");
+        return 0;
+    }
     let registry = unsafe { registry_from_ptr(registry_ptr) };
     registry.pending_delete_count() as jint
 }
-

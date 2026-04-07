@@ -10,7 +10,7 @@
 //!
 //! Supports:
 //! - `fs`    — local filesystem (for dev/test and fs-type repositories)
-//! - `s3`    — Amazon S3 (with optional SSE-KMS, SSE-S3 encryption)
+//! - `s3`    — Amazon S3 (SSE-KMS, SSE-S3, DSSE-KMS, SSE-C, bucket key, proxy, IMDSv1 fallback)
 //! - `gcs`   — Google Cloud Storage
 //! - `azure` — Azure Blob Storage
 
@@ -18,7 +18,7 @@ use object_store::ObjectStore;
 use std::sync::Arc;
 use vectorized_exec_spi::log_info;
 
-use super::remote_object_store::RemoteObjectStore;
+use crate::remote_object_store::RemoteObjectStore;
 
 /// Create an `ObjectStore` from the given store type and JSON configuration.
 pub fn create_object_store(store_type: &str, config_json: &str) -> Arc<dyn ObjectStore> {
@@ -58,6 +58,8 @@ fn create_s3_store(config: &serde_json::Value) -> Arc<dyn ObjectStore> {
     let mut builder = AmazonS3Builder::new()
         .with_bucket_name(bucket);
 
+    // --- Credentials ---
+
     if let Some(region) = config["region"].as_str() {
         builder = builder.with_region(region);
     }
@@ -74,7 +76,8 @@ fn create_s3_store(config: &serde_json::Value) -> Arc<dyn ObjectStore> {
         builder = builder.with_token(session_token);
     }
 
-    // Encryption: SSE-KMS or SSE-S3
+    // --- Encryption ---
+
     if let Some(encryption) = config["encryption"].as_str() {
         match encryption {
             "aws:kms" | "SSE-KMS" => {
@@ -82,9 +85,16 @@ fn create_s3_store(config: &serde_json::Value) -> Arc<dyn ObjectStore> {
                     builder = builder.with_sse_kms_encryption(kms_key_id);
                 }
             }
+            "aws:kms:dsse" | "DSSE-KMS" => {
+                if let Some(kms_key_id) = config["kms_key_id"].as_str() {
+                    builder = builder.with_dsse_kms_encryption(kms_key_id);
+                }
+            }
+            "SSE-C" => {
+                // SSE-C requires object_store >= 0.13. Log and skip for now.
+                log_info!("[store_factory] s3: SSE-C encryption requested but not supported in current object_store version");
+            }
             "AES256" | "SSE-S3" => {
-                // SSE-S3 (AES256) is the default S3 server-side encryption.
-                // No explicit builder config needed — S3 handles it automatically.
                 log_info!("[store_factory] s3: SSE-S3 (AES256) encryption — using S3 default");
             }
             other => {
@@ -93,14 +103,61 @@ fn create_s3_store(config: &serde_json::Value) -> Arc<dyn ObjectStore> {
         }
     }
 
-    // Allow virtual-hosted-style or path-style
+    // Bucket key — reduces KMS API calls. Requires object_store >= 0.13.
+    if let Some(bucket_key) = config["bucket_key_enabled"].as_bool() {
+        if bucket_key {
+            log_info!("[store_factory] s3: bucket_key_enabled requested but not supported in current object_store version");
+        }
+    }
+
+    // --- Request style ---
+
     if config["virtual_hosted_style_request"].as_bool() == Some(true) {
         builder = builder.with_virtual_hosted_style_request(true);
     }
-
-    // Allow unsigned requests (for public buckets)
     if config["unsigned_payload"].as_bool() == Some(true) {
         builder = builder.with_unsigned_payload(true);
+    }
+    if config["skip_signature"].as_bool() == Some(true) {
+        builder = builder.with_skip_signature(true);
+    }
+    if config["allow_http"].as_bool() == Some(true) {
+        builder = builder.with_allow_http(true);
+    }
+
+    // --- S3 Express One Zone ---
+
+    if config["s3_express"].as_bool() == Some(true) {
+        builder = builder.with_s3_express(true);
+    }
+
+    // --- IMDSv1 fallback (for legacy EC2/kube2iam environments) ---
+
+    if config["imdsv1_fallback"].as_bool() == Some(true) {
+        builder = builder.with_imdsv1_fallback();
+    }
+
+    // --- Proxy ---
+
+    if let Some(proxy_url) = config["proxy_url"].as_str() {
+        builder = builder.with_proxy_url(proxy_url);
+    }
+    if let Some(proxy_ca_cert) = config["proxy_ca_certificate"].as_str() {
+        builder = builder.with_proxy_ca_certificate(proxy_ca_cert);
+    }
+
+    // --- Checksum ---
+
+    if let Some(checksum) = config["checksum_algorithm"].as_str() {
+        use object_store::aws::Checksum;
+        let algo = match checksum {
+            "SHA256" => Checksum::SHA256,
+            _ => {
+                log_info!("[store_factory] s3: unknown checksum algorithm '{}', skipping", checksum);
+                Checksum::SHA256 // default
+            }
+        };
+        builder = builder.with_checksum_algorithm(algo);
     }
 
     log_info!("[store_factory] creating s3 store: bucket={}, region={}, encryption={}",

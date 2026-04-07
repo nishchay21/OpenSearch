@@ -111,7 +111,7 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
         }
         this.datafusionReaderManager = new DatafusionReaderManager(
             shardPath.getDataPath().resolve(dataFormat.getName()).toString(), formatCatalogSnapshot, dataFormat.getName(),
-            dataFusionService.getRuntimePointer()
+            dataFusionService
         );
         this.datafusionService = dataFusionService;
         this.cacheManager = datafusionService.getCacheManager();

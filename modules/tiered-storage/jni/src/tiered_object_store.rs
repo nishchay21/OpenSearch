@@ -17,9 +17,9 @@ use object_store::{
 use std::fmt::{self, Display, Formatter};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use vectorized_exec_spi::log_info;
+use vectorized_exec_spi::{log_debug, log_info};
 
-use super::file_registry::{FileLocation, FileRegistry};
+use crate::file_registry::{FileLocation, FileRegistry};
 
 /// Global tiered object store registered with DataFusion for the `file://` scheme.
 ///
@@ -87,18 +87,14 @@ impl ObjectStore for TieredObjectStore {
     async fn get_opts(&self, location: &ObjectPath, options: GetOptions) -> Result<GetResult> {
         let path_str = location.as_ref();
 
-        // Check if this file has a remote path and a corresponding remote store
-        let remote_info = self.registry.get_remote_path(path_str)
-            .and_then(|rp| {
-                self.registry.get_remote_store_for_file(path_str)
-                    .map(|store| (rp, store))
-            });
+        // Single DashMap lookup for remote path + store
+        let remote_info = self.registry.get_remote_info(path_str);
 
         if let Some((remote_path, remote_store)) = remote_info {
             let count = self.remote_reads.fetch_add(1, Ordering::Relaxed) + 1;
             let loc = self.registry.get_location(path_str).unwrap_or(FileLocation::Local);
             let repo_key = self.registry.get_repo_key(path_str).unwrap_or_default();
-            log_info!(
+            log_debug!(
                 "[TieredObjectStore] get_opts #{} DISPATCHING_TO_REMOTE location={} remote_path={} repo={} registry_state={}",
                 count, location, remote_path, repo_key, loc
             );
@@ -107,7 +103,7 @@ impl ObjectStore for TieredObjectStore {
             let result = remote_store.get_opts(&remote_location, options).await;
 
             match &result {
-                Ok(r) => log_info!(
+                Ok(r) => log_debug!(
                     "[TieredObjectStore] get_opts #{} REMOTE_READ_SUCCESS remote_path={} bytes={}",
                     count, remote_path, r.meta.size
                 ),
@@ -119,7 +115,7 @@ impl ObjectStore for TieredObjectStore {
             result
         } else {
             let count = self.passthrough_reads.fetch_add(1, Ordering::Relaxed) + 1;
-            log_info!(
+            log_debug!(
                 "[TieredObjectStore] get_opts #{} READ_FROM_LOCAL (no remote path/store in registry): {}",
                 count, location
             );
@@ -134,23 +130,19 @@ impl ObjectStore for TieredObjectStore {
             Ok(meta) => {
                 self.registry.register(path_str, FileLocation::Local, meta.size as u64);
                 let loc = self.registry.get_location(path_str).unwrap_or(FileLocation::Local);
-                log_info!("[TieredObjectStore] head: {} location={}", location, loc);
+                log_debug!("[TieredObjectStore] head: {} location={}", location, loc);
                 Ok(meta)
             }
             Err(local_err) => {
                 // Try remote if we have a remote store for this file
-                let remote_info = self.registry.get_remote_path(path_str)
-                    .and_then(|rp| {
-                        self.registry.get_remote_store_for_file(path_str)
-                            .map(|store| (rp, store))
-                    });
+                let remote_info = self.registry.get_remote_info(path_str);
 
                 if let Some((remote_path, remote_store)) = remote_info {
                     let remote_loc = ObjectPath::from(remote_path);
                     match remote_store.head(&remote_loc).await {
                         Ok(mut meta) => {
                             self.registry.register(path_str, FileLocation::Remote, meta.size as u64);
-                            log_info!("[TieredObjectStore] head: {} location=REMOTE (via registry)", location);
+                            log_debug!("[TieredObjectStore] head: {} location=REMOTE (via registry)", location);
                             meta.location = location.clone();
                             Ok(meta)
                         }
