@@ -269,13 +269,22 @@ public class TieredStoragePlugin extends Plugin implements IndexStorePlugin, Act
 
         RepositoriesService repoService = repositoriesServiceSupplier.get();
         Repository repo = repoService.repository(repositoryName);
-        String storeType = resolveStoreType(repo);
-        String configJson = buildStoreConfig(repositoryName, repo, storeType);
 
-        TieredStoreNative.addRemoteStore(globalRegistryPtr, repositoryName, storeType, configJson);
+        if (repo instanceof org.opensearch.repositories.blobstore.BlobStoreRepository) {
+            org.opensearch.repositories.blobstore.BlobStoreRepository blobStoreRepo =
+                (org.opensearch.repositories.blobstore.BlobStoreRepository) repo;
+            org.opensearch.common.blobstore.BlobContainer blobContainer =
+                blobStoreRepo.blobStore().blobContainer(org.opensearch.common.blobstore.BlobPath.cleanPath());
+
+            TieredStoreNative.addRemoteStoreWithBlobContainer(globalRegistryPtr, repositoryName, blobContainer);
+        } else {
+            String storeType = resolveStoreType(repo);
+            String configJson = buildStoreConfig(repositoryName, repo, storeType);
+            TieredStoreNative.addRemoteStore(globalRegistryPtr, repositoryName, storeType, configJson);
+        }
+
         registeredRepos.add(repositoryName);
-
-        logger.info("[TieredStoragePlugin] registered remote store: repo={}, type={}", repositoryName, storeType);
+        logger.info("[TieredStoragePlugin] registered remote store: repo={}", repositoryName);
     }
 
     /**

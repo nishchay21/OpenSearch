@@ -83,6 +83,14 @@ public final class TieredStoreNative {
         b.addRemoteStore(registryPtr, repoKey, storeType, configJson);
     }
 
+    public static void addRemoteStoreWithBlobContainer(long registryPtr, String repoKey, Object blobContainer) {
+        TieredStoreNativeBridge b = bridge();
+        if (b == null) {
+            return;
+        }
+        b.addRemoteStoreWithBlobContainer(registryPtr, repoKey, blobContainer);
+    }
+
     public static void destroyTieredObjectStore(long dataPtr, long vtablePtr) {
         TieredStoreNativeBridge b = bridge();
         if (b == null) {

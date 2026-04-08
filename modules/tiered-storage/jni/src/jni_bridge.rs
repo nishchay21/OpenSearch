@@ -130,6 +130,52 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridg
     registry.add_remote_store(&repo_key_str, remote_store);
 }
 
+/// Add a remote store backed by a Java BlobContainer.
+/// The BlobContainer handles credentials, encryption, retries — Rust just calls readBlob().
+#[no_mangle]
+pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridgeImpl_nativeAddRemoteStoreWithBlobContainer(
+    mut env: JNIEnv, _class: JClass, registry_ptr: jlong, repo_key: JString,
+    blob_container: jni::objects::JObject,
+) {
+    if registry_ptr == 0 {
+        let _ = env.throw_new("java/lang/NullPointerException", "registry_ptr is null");
+        return;
+    }
+    let registry = unsafe { registry_from_ptr(registry_ptr) };
+    let repo_key_str: String = match env.get_string(&repo_key) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            let _ = env.throw_new("java/lang/IllegalArgumentException",
+                format!("Invalid repo_key: {:?}", e));
+            return;
+        }
+    };
+
+    // Create a GlobalRef so the BlobContainer survives beyond this JNI call
+    let global_ref = match env.new_global_ref(&blob_container) {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = env.throw_new("java/lang/RuntimeException",
+                format!("Failed to create global ref for BlobContainer: {:?}", e));
+            return;
+        }
+    };
+
+    let jvm = match env.get_java_vm() {
+        Ok(vm) => Arc::new(vm),
+        Err(e) => {
+            let _ = env.throw_new("java/lang/RuntimeException",
+                format!("Failed to get JavaVM: {:?}", e));
+            return;
+        }
+    };
+
+    log_info!("[TieredStoreNativeBridge] addRemoteStoreWithBlobContainer: repo_key={}", repo_key_str);
+
+    let backend = crate::java_blob_store::JavaBlobStoreBackend::new(global_ref, jvm);
+    registry.add_remote_store(&repo_key_str, Arc::new(backend));
+}
+
 #[no_mangle]
 pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridgeImpl_nativeDestroyTieredObjectStore(
     _env: JNIEnv, _class: JClass, data_ptr: jlong, vtable_ptr: jlong,

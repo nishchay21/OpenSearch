@@ -36,6 +36,11 @@ public final class TieredStoreNativeBridgeImpl implements TieredStoreNativeBridg
     }
 
     @Override
+    public void addRemoteStoreWithBlobContainer(long registryPtr, String repoKey, Object blobContainer) {
+        nativeAddRemoteStoreWithBlobContainer(registryPtr, repoKey, blobContainer);
+    }
+
+    @Override
     public void destroyTieredObjectStore(long dataPtr, long vtablePtr) {
         nativeDestroyTieredObjectStore(dataPtr, vtablePtr);
     }
@@ -120,6 +125,7 @@ public final class TieredStoreNativeBridgeImpl implements TieredStoreNativeBridg
     private static native void nativeInitLogger();
     private static native long[] nativeCreateTieredObjectStore();
     private static native void nativeAddRemoteStore(long registryPtr, String repoKey, String storeType, String configJson);
+    private static native void nativeAddRemoteStoreWithBlobContainer(long registryPtr, String repoKey, Object blobContainer);
     private static native void nativeDestroyTieredObjectStore(long dataPtr, long vtablePtr);
     private static native void nativeDestroyFileRegistry(long registryPtr);
     private static native void nativeRegistryMarkSyncedToRemote(long registryPtr, String key, String remotePath, String repoKey);

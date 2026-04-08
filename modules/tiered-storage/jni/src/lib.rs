@@ -13,4 +13,5 @@ pub mod file_registry;
 pub mod remote_object_store;
 pub mod store_factory;
 pub mod tiered_object_store;
+pub mod java_blob_store;
 pub mod jni_bridge;

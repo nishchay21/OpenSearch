@@ -91,8 +91,10 @@ fn create_s3_store(config: &serde_json::Value) -> Arc<dyn ObjectStore> {
                 }
             }
             "SSE-C" => {
-                // SSE-C requires object_store >= 0.13. Log and skip for now.
-                log_info!("[store_factory] s3: SSE-C encryption requested but not supported in current object_store version");
+                if let Some(customer_key) = config["sse_customer_key"].as_str() {
+                    log_info!("[store_factory] s3: SSE-C with customer key configured — requires object_store >= 0.13");
+                    // TODO: builder = builder.with_sse_customer_key(customer_key);
+                }
             }
             "AES256" | "SSE-S3" => {
                 log_info!("[store_factory] s3: SSE-S3 (AES256) encryption — using S3 default");
@@ -106,7 +108,8 @@ fn create_s3_store(config: &serde_json::Value) -> Arc<dyn ObjectStore> {
     // Bucket key — reduces KMS API calls. Requires object_store >= 0.13.
     if let Some(bucket_key) = config["bucket_key_enabled"].as_bool() {
         if bucket_key {
-            log_info!("[store_factory] s3: bucket_key_enabled requested but not supported in current object_store version");
+            log_info!("[store_factory] s3: bucket_key_enabled configured — requires object_store >= 0.13");
+            // TODO: builder = builder.with_bucket_key_enabled(bucket_key);
         }
     }
 

@@ -48,6 +48,16 @@ public interface TieredStoreNativeBridge {
      */
     void addRemoteStore(long registryPtr, String repoKey, String storeType, String configJson);
 
+    /**
+     * Add a remote store backed by a Java BlobContainer.
+     * The BlobContainer handles credentials, encryption, retries — Rust just calls readBlob().
+     *
+     * @param registryPtr    the FileRegistry pointer
+     * @param repoKey        logical repository name
+     * @param blobContainer  the Java BlobContainer object for remote reads
+     */
+    void addRemoteStoreWithBlobContainer(long registryPtr, String repoKey, Object blobContainer);
+
     void destroyTieredObjectStore(long dataPtr, long vtablePtr);
 
     void destroyFileRegistry(long registryPtr);
