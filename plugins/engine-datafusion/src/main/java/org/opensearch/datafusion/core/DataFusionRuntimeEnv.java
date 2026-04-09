@@ -14,9 +14,12 @@ import org.opensearch.common.settings.Setting;
 import org.opensearch.core.common.unit.ByteSizeUnit;
 import org.opensearch.core.common.unit.ByteSizeValue;
 import org.opensearch.datafusion.jni.NativeBridge;
+import org.opensearch.datafusion.jni.TieredStoreNativeBridgeImpl;
 import org.opensearch.datafusion.jni.handle.GlobalRuntimeHandle;
 import org.opensearch.datafusion.search.cache.CacheManager;
 import org.opensearch.datafusion.search.cache.CacheUtils;
+import org.opensearch.vectorized.execution.jni.SharedNativeLibrary;
+import org.opensearch.vectorized.execution.jni.TieredStoreNativeBridge;
 
 /**
  * DataFusion runtime environment manager.
@@ -55,6 +58,15 @@ public final class DataFusionRuntimeEnv implements AutoCloseable {
         long memoryLimit = clusterService.getClusterSettings().get(DATAFUSION_MEMORY_POOL_CONFIGURATION).getBytes();
         long spillLimit = clusterService.getClusterSettings().get(DATAFUSION_SPILL_MEMORY_LIMIT_CONFIGURATION).getBytes();
         long cacheManagerConfigPtr = CacheUtils.createCacheConfig(clusterService.getClusterSettings());
+
+        // Inject ClusterService into TieredStoreNativeBridgeImpl so it can read
+        // TieredCacheSettings when createTieredObjectStore() is called later.
+        TieredStoreNativeBridge bridge = SharedNativeLibrary.get(
+            TieredStoreNativeBridge.REGISTRY_KEY, TieredStoreNativeBridge.class);
+        if (bridge instanceof TieredStoreNativeBridgeImpl) {
+            ((TieredStoreNativeBridgeImpl) bridge).setClusterService(clusterService);
+        }
+
         NativeBridge.initTokioRuntimeManager(Runtime.getRuntime().availableProcessors());
         NativeBridge.startTokioRuntimeMonitoring(); // TODO : do we need this control in java ?
         this.runtimeHandle = new GlobalRuntimeHandle(memoryLimit, cacheManagerConfigPtr, spill_dir, spillLimit);

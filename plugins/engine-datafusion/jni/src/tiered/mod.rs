@@ -18,9 +18,13 @@
 //! `TieredStoreNativeBridge` interface, which dispatches here.
 
 pub mod file_registry;
+pub mod foyer_cache;
+pub mod foyer_cache_manager;
 pub mod remote_object_store;
 pub mod store_factory;
 pub mod tiered_object_store;
+
+pub use foyer_cache_manager::FoyerCacheManager;
 
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
@@ -53,15 +57,42 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridg
     vectorized_exec_spi::logger::init_logger_from_env(&env);
 }
 
-/// Create a global TieredObjectStore (no remote stores yet — added via addRemoteStore).
+/// Create a global TieredObjectStore with an optional Foyer page cache.
+/// No remote stores yet — added via addRemoteStore.
 /// Returns long[3]: [objectStoreDataPtr, objectStoreVtablePtr, registryPtr].
+///
+/// `disk_cache_bytes == 0` disables the page cache entirely.
 #[no_mangle]
 pub extern "system" fn Java_org_opensearch_datafusion_jni_TieredStoreNativeBridgeImpl_nativeCreateTieredObjectStore(
     mut env: JNIEnv, _class: JClass,
+    disk_cache_bytes: jlong,
+    disk_cache_dir: JString,
 ) -> jlongArray {
-    log_info!("[TieredStoreNativeBridge] createTieredObjectStore (multi-repo)");
+    
+    // Build Foyer cache manager inline if cache is configured.
+    let foyer: Option<Arc<FoyerCacheManager>> = if disk_cache_bytes > 0 {
+        let dir: String = match env.get_string(&disk_cache_dir) {
+            Ok(s) => s.into(),
+            Err(e) => {
+                let _ = env.throw_new("java/lang/IllegalArgumentException",
+                    format!("Invalid disk_cache_dir: {:?}", e));
+                return std::ptr::null_mut();
+            }
+        };
+        log_info!(
+            "[TieredStoreNativeBridge] Foyer page cache enabled: disk={}B, dir={}",
+            disk_cache_bytes, dir
+        );
+        Some(Arc::new(FoyerCacheManager::new(disk_cache_bytes as usize, dir)))
+    } else {
+        log_info!("[TieredStoreNativeBridge] Foyer page cache disabled (disk_cache_bytes=0)");
+        None
+    };
 
-    let (tiered_store, registry) = TieredObjectStore::new();
+    log_info!("[TieredStoreNativeBridge] createTieredObjectStore (foyer={})",
+        if foyer.is_some() { "enabled" } else { "disabled" });
+
+    let (tiered_store, registry) = TieredObjectStore::new_with_cache(foyer);
     let store: Arc<dyn ObjectStore> = Arc::new(tiered_store);
 
     let raw: *const dyn ObjectStore = Arc::into_raw(store);
