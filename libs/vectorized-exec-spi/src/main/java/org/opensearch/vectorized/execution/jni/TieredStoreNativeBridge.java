@@ -31,8 +31,12 @@ public interface TieredStoreNativeBridge {
     void initLogger();
 
     /**
-     * Create a global {@code TieredObjectStore} with no remote stores.
+     * Create a global {@code TieredObjectStore} with an optional Foyer disk page cache.
      * Remote stores are added later via {@link #addRemoteStore}.
+     *
+     * <p>The Foyer {@code FoyerCacheManager} is created inside the native layer.
+     * Pass {@code diskCacheBytes = 0} (or empty {@code diskCacheDir}) to disable
+     * the page cache entirely.
      *
      * @return {@code long[3]}: {@code [objectStoreDataPtr, objectStoreVtablePtr, registryPtr]}
      */

@@ -29,6 +29,7 @@ import org.opensearch.datafusion.search.DatafusionQuery;
 import org.opensearch.datafusion.search.DatafusionReaderManager;
 import org.opensearch.datafusion.search.DatafusionSearcher;
 import org.opensearch.datafusion.search.cache.CacheSettings;
+import org.opensearch.datafusion.search.cache.TieredCacheSettings;
 import org.opensearch.env.Environment;
 import org.opensearch.env.NodeEnvironment;
 import org.opensearch.index.IndexSettings;
@@ -208,7 +209,8 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEngi
         settingList.add(DATAFUSION_SPILL_MEMORY_LIMIT_CONFIGURATION);
         settingList.addAll(Stream.of(
                 CacheSettings.CACHE_SETTINGS,
-                CacheSettings.CACHE_ENABLED)
+                CacheSettings.CACHE_ENABLED,
+                TieredCacheSettings.TIERED_CACHE_SETTINGS)
             .flatMap(x -> x.stream()).collect(Collectors.toList()));
 
         return settingList;

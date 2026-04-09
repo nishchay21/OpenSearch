@@ -19,6 +19,8 @@ arrow-array = "57.3.0"
 arrow-schema = "57.3.0"
 arrow-buffer = "57.3.0"
 downcast-rs = "1.2"
+foyer = { version = "=0.11.5" }
+bytes = "1.9"
 
 
 # JNI dependencies

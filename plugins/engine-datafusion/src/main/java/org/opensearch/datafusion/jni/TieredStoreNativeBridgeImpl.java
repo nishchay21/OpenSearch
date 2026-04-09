@@ -8,6 +8,10 @@
 
 package org.opensearch.datafusion.jni;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.opensearch.cluster.service.ClusterService;
+import org.opensearch.datafusion.search.cache.TieredCacheSettings;
 import org.opensearch.vectorized.execution.jni.TieredStoreNativeBridge;
 
 /**
@@ -17,17 +21,74 @@ import org.opensearch.vectorized.execution.jni.TieredStoreNativeBridge;
  * classloader, which owns the {@code .so}. The tiered-storage module
  * calls through the {@link TieredStoreNativeBridge} interface, which
  * dispatches to these native methods.
+ * <p>
+ * {@link #setClusterService(ClusterService)} must be called once after the
+ * static initialiser registers this instance, so that {@link #createTieredObjectStore()}
+ * can read the Foyer page-cache settings ({@link TieredCacheSettings}).
  */
 public final class TieredStoreNativeBridgeImpl implements TieredStoreNativeBridge {
+
+    private static final Logger logger = LogManager.getLogger(TieredStoreNativeBridgeImpl.class);
+
+    /**
+     * Set after construction by {@code DataFusionRuntimeEnv} once the
+     * {@code ClusterService} is available. Volatile for safe publication.
+     */
+    private volatile ClusterService clusterService;
+
+    /**
+     * Inject the {@link ClusterService} so that {@link #createTieredObjectStore()}
+     * can read {@link TieredCacheSettings} at store-creation time.
+     * Called once from {@code DataFusionRuntimeEnv} constructor.
+     */
+    public void setClusterService(ClusterService clusterService) {
+        this.clusterService = clusterService;
+    }
 
     @Override
     public void initLogger() {
         nativeInitLogger();
     }
 
+    /**
+     * Creates a {@code TieredObjectStore} with an optional Foyer disk page cache.
+     * Reads {@link TieredCacheSettings} from {@code ClusterSettings} internally
+     * and passes {@code diskCacheBytes} / {@code diskCacheDir} to the native layer.
+     * Callers in {@code modules/tiered-storage} see only the no-arg interface.
+     */
     @Override
     public long[] createTieredObjectStore() {
-        return nativeCreateTieredObjectStore();
+        long diskCacheBytes = 0L;
+        String diskCacheDir = "";
+
+        if (clusterService != null) {
+            try {
+                var settings = clusterService.getClusterSettings();
+                boolean cacheEnabled = settings.get(TieredCacheSettings.PAGE_CACHE_ENABLED);
+                if (cacheEnabled) {
+                    diskCacheBytes = settings.get(TieredCacheSettings.PAGE_CACHE_DISK_CAPACITY).getBytes();
+                    diskCacheDir  = settings.get(TieredCacheSettings.PAGE_CACHE_DIR);
+                }
+                logger.info(
+                    "[TieredStoreNativeBridgeImpl] createTieredObjectStore: "
+                        + "cacheEnabled={}, diskBytes={}, diskDir={}",
+                    cacheEnabled, diskCacheBytes, diskCacheDir
+                );
+            } catch (Exception e) {
+                logger.warn(
+                    "[TieredStoreNativeBridgeImpl] Failed to read TieredCacheSettings — "
+                        + "page cache disabled: {}",
+                    e.getMessage()
+                );
+            }
+        } else {
+            logger.warn(
+                "[TieredStoreNativeBridgeImpl] ClusterService not set — "
+                    + "page cache disabled. Call setClusterService() before createTieredObjectStore()."
+            );
+        }
+
+        return nativeCreateTieredObjectStore(diskCacheBytes, diskCacheDir);
     }
 
     @Override
@@ -118,7 +179,8 @@ public final class TieredStoreNativeBridgeImpl implements TieredStoreNativeBridg
     // --- Native method declarations (resolved from DataFusion's .so) ---
 
     private static native void nativeInitLogger();
-    private static native long[] nativeCreateTieredObjectStore();
+    /** Rust: nativeCreateTieredObjectStore(diskCacheBytes, diskCacheDir) — params read from ClusterSettings above */
+    private static native long[] nativeCreateTieredObjectStore(long diskCacheBytes, String diskCacheDir);
     private static native void nativeAddRemoteStore(long registryPtr, String repoKey, String storeType, String configJson);
     private static native void nativeDestroyTieredObjectStore(long dataPtr, long vtablePtr);
     private static native void nativeDestroyFileRegistry(long registryPtr);

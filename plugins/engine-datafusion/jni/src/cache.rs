@@ -13,6 +13,7 @@ pub const ALL_CACHE_TYPES: &[&str] = &[CACHE_TYPE_METADATA, CACHE_TYPE_STATS];
 pub const CACHE_TYPE_METADATA: &str = "METADATA";
 pub const CACHE_TYPE_STATS: &str = "STATISTICS";
 
+
 // Helper function to handle cache errors
 #[allow(dead_code)]
 fn handle_cache_error(env: &mut JNIEnv, operation: &str, error: &str) {
