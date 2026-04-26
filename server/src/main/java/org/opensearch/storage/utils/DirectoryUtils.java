@@ -10,6 +10,7 @@ package org.opensearch.storage.utils;
 
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.store.FilterDirectory;
 
 import java.nio.file.Path;
 
@@ -20,11 +21,34 @@ public class DirectoryUtils {
 
     public static final String SWITCHABLE_PREFIX = "_switchable";
 
+    /**
+     * Walks the {@link FilterDirectory} chain to find the underlying {@link FSDirectory}.
+     * Returns immediately if the given directory is already an FSDirectory.
+     *
+     * <p>This method only unwraps {@link FilterDirectory} instances. Custom Directory subclasses
+     * that wrap an FSDirectory without extending FilterDirectory will not be unwrapped — this is
+     * intentional, as all directory wrappers in the OpenSearch codebase use FilterDirectory.
+     *
+     * @param dir the directory to unwrap
+     * @return the underlying FSDirectory
+     * @throws IllegalStateException if no FSDirectory is found in the FilterDirectory chain
+     */
+    public static FSDirectory getFSDirectory(Directory dir) {
+        Directory current = dir;
+        while (current instanceof FilterDirectory) {
+            current = ((FilterDirectory) current).getDelegate();
+        }
+        if (current instanceof FSDirectory) {
+            return (FSDirectory) current;
+        }
+        throw new IllegalStateException("No FSDirectory found in directory chain: " + dir.getClass().getName());
+    }
+
     public static Path getFilePath(Directory localDirectory, String fileName) {
-        return ((FSDirectory) localDirectory).getDirectory().resolve(fileName);
+        return getFSDirectory(localDirectory).getDirectory().resolve(fileName);
     }
 
     public static Path getFilePathSwitchable(Directory localDirectory, String fileName) {
-        return ((FSDirectory) localDirectory).getDirectory().resolve(fileName + SWITCHABLE_PREFIX);
+        return getFSDirectory(localDirectory).getDirectory().resolve(fileName + SWITCHABLE_PREFIX);
     }
 }
