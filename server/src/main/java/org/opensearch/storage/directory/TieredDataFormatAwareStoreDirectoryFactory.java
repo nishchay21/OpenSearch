@@ -14,7 +14,7 @@ import org.apache.lucene.store.Directory;
 import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.core.index.shard.ShardId;
 import org.opensearch.index.IndexSettings;
-import org.opensearch.index.engine.dataformat.DataFormat;
+import org.opensearch.index.engine.dataformat.DataFormatDescriptor;
 import org.opensearch.index.engine.dataformat.DataFormatRegistry;
 import org.opensearch.index.shard.ShardPath;
 import org.opensearch.index.store.DataFormatAwareStoreDirectory;
@@ -124,11 +124,25 @@ public class TieredDataFormatAwareStoreDirectoryFactory implements DataFormatAwa
         // 2. Wrap in SubdirectoryAwareDirectory for path routing
         SubdirectoryAwareDirectory subdirAware = new SubdirectoryAwareDirectory(localDir, shardPath);
 
-        // 3. Ask each format plugin for a tiered directory
-        Map<DataFormat, Directory> tieredDirs = dataFormatRegistry.getTieredDirectories(subdirAware, remoteDirectory, indexSettings);
+        // 3. Build a per-format TieredDirectory for each registered data format.
+        // Each format gets its own TieredDirectory instance so that format-specific
+        // prefetch and caching behavior can be configured independently.
+        // The SubdirectoryAwareDirectory handles path resolution for all formats
+        // (e.g., "parquet/_0.pqt" → absolute path), so each TieredDirectory shares
+        // the same local directory but can have independent remote/cache behavior.
+        Map<String, DataFormatDescriptor> descriptors = dataFormatRegistry.getFormatDescriptors(indexSettings);
         Map<String, Directory> formatDirectories = new HashMap<>();
-        for (Map.Entry<DataFormat, Directory> entry : tieredDirs.entrySet()) {
-            formatDirectories.put(entry.getKey().name(), entry.getValue());
+        for (Map.Entry<String, DataFormatDescriptor> entry : descriptors.entrySet()) {
+            String formatName = entry.getKey();
+            TieredDirectory formatTiered = new TieredDirectory(
+                subdirAware,
+                remoteDirectory,
+                fileCache,
+                threadPool,
+                tieredStoragePrefetchSettingsSupplier
+            );
+            formatDirectories.put(formatName, formatTiered);
+            logger.debug("Created TieredDirectory for format [{}] on shard [{}]", formatName, shardId);
         }
 
         // 4. Create TieredSubdirectoryAwareDirectory
