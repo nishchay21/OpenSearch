@@ -571,42 +571,6 @@ public class TieredSubdirectoryAwareDirectoryTests extends TieredStorageBaseTest
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // Constructor resource leak safety
-    // ═══════════════════════════════════════════════════════════════
-
-    /**
-     * If TieredDirectory construction fails, format directories should be closed
-     * to prevent resource leaks.
-     */
-    public void testConstructorFailureClosesFormatDirectories() {
-        Directory mockFormatDir = mock(Directory.class);
-        Map<String, Directory> formatDirs = new HashMap<>();
-        formatDirs.put("parquet", mockFormatDir);
-
-        // Pass null fileCache to trigger NPE inside TieredDirectory constructor's CompositeDirectory validation
-        try {
-            new TieredSubdirectoryAwareDirectory(
-                subdirAware,
-                remoteSegmentStoreDirectory,
-                null, // null fileCache → triggers IllegalStateException in CompositeDirectory
-                threadPool,
-                formatDirs,
-                getMockPrefetchSettingsSupplier()
-            );
-            fail("Expected IllegalStateException from null fileCache");
-        } catch (IllegalStateException e) {
-            // Expected — CompositeDirectory validates fileCache != null
-        }
-
-        // Format directory should have been closed in the finally block
-        try {
-            verify(mockFormatDir).close();
-        } catch (IOException e) {
-            fail("close() should not throw in verify");
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════════════
     // IOUtils.close tests — partial close safety
     // ═══════════════════════════════════════════════════════════════
 

@@ -95,14 +95,14 @@ public class DataFormatAwareStoreDirectory extends FilterDirectory implements Re
         ShardPath shardPath,
         DataFormatRegistry dataFormatRegistry
     ) {
-        this(new SubdirectoryAwareDirectory(delegate, shardPath), shardPath, dataFormatRegistry, indexSettings);
+        this(indexSettings, new SubdirectoryAwareDirectory(delegate, shardPath), shardPath, dataFormatRegistry, false);
     }
 
     /**
-     * Creates a DataFormatAwareStoreDirectory with a pre-built delegate directory (no wrapping).
+     * Constructs a DataFormatAwareStoreDirectory with a pre-built delegate directory.
      *
      * <p>Unlike the primary constructor which auto-wraps the delegate in
-     * {@link SubdirectoryAwareDirectory}, this factory method uses the delegate as-is.
+     * {@link SubdirectoryAwareDirectory}, this constructor uses the delegate as-is.
      * This is intended for warm nodes where the delegate is already a
      * TieredSubdirectoryAwareDirectory (which wraps SubdirectoryAwareDirectory internally).
      *
@@ -110,23 +110,14 @@ public class DataFormatAwareStoreDirectory extends FilterDirectory implements Re
      * @param delegate            the pre-built directory (e.g., TieredSubdirectoryAwareDirectory)
      * @param shardPath           the shard path for resolving subdirectories
      * @param dataFormatRegistry  registry providing format-specific checksum handlers
-     * @return a new DataFormatAwareStoreDirectory wrapping the given delegate directly
+     * @param directDelegate      marker flag; when {@code true}, delegate is used directly without wrapping
      */
-    public static DataFormatAwareStoreDirectory withDirectoryDelegate(
+    public DataFormatAwareStoreDirectory(
         IndexSettings indexSettings,
         Directory delegate,
         ShardPath shardPath,
-        DataFormatRegistry dataFormatRegistry
-    ) {
-        return new DataFormatAwareStoreDirectory(delegate, shardPath, dataFormatRegistry, indexSettings);
-    }
-
-    // Private constructor — shared init logic, not exposed to callers
-    private DataFormatAwareStoreDirectory(
-        Directory delegate,
-        ShardPath shardPath,
         DataFormatRegistry dataFormatRegistry,
-        IndexSettings indexSettings
+        boolean directDelegate
     ) {
         super(delegate);
         this.shardPath = shardPath;
@@ -138,7 +129,8 @@ public class DataFormatAwareStoreDirectory extends FilterDirectory implements Re
         this.checksumStrategies.put(DEFAULT_FORMAT, new LuceneChecksumHandler());
 
         logger.debug(
-            "Created DataFormatAwareStoreDirectory for shard {} with checksum strategies for formats: {}",
+            "Created DataFormatAwareStoreDirectory (directDelegate={}) for shard {} with checksum strategies for formats: {}",
+            directDelegate,
             shardPath.getShardId(),
             checksumStrategies.keySet()
         );

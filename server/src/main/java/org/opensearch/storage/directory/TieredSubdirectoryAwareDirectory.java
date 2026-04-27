@@ -86,22 +86,14 @@ public class TieredSubdirectoryAwareDirectory extends FilterDirectory implements
     ) {
         super(localDirectory);
         this.formatDirectories = formatDirectories;
-        boolean success = false;
-        try {
-            this.tieredDirectory = new TieredDirectory(
-                localDirectory,
-                remoteDirectory,
-                fileCache,
-                threadPool,
-                tieredStoragePrefetchSettingsSupplier
-            );
-            logger.debug("Created TieredSubdirectoryAwareDirectory with format directories: {}", formatDirectories.keySet());
-            success = true;
-        } finally {
-            if (success == false) {
-                IOUtils.closeWhileHandlingException(formatDirectories.values());
-            }
-        }
+        this.tieredDirectory = new TieredDirectory(
+            localDirectory,
+            remoteDirectory,
+            fileCache,
+            threadPool,
+            tieredStoragePrefetchSettingsSupplier
+        );
+        logger.debug("Created TieredSubdirectoryAwareDirectory with format directories: {}", formatDirectories.keySet());
     }
 
     @Override

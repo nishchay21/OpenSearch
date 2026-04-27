@@ -87,9 +87,8 @@ public class GracefulDegradationTests extends OpenSearchTestCase {
         IndexMetadata indexMetadata = IndexMetadata.builder("test-degradation").settings(settings).build();
         IndexSettings indexSettings = new IndexSettings(indexMetadata, Settings.EMPTY);
 
-        // Simulate sandbox not loaded: DataFormatRegistry returns empty tiered directories
+        // Simulate sandbox not loaded: DataFormatRegistry returns empty format descriptors
         DataFormatRegistry registry = mock(DataFormatRegistry.class);
-        when(registry.getTieredDirectories(any(), any(), any())).thenReturn(Map.of());
         when(registry.getFormatDescriptors(any())).thenReturn(Map.of());
 
         FSDirectory fsDir = FSDirectory.open(shardPath.resolveIndex());

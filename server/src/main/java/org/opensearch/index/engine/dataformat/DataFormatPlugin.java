@@ -57,32 +57,4 @@ public interface DataFormatPlugin {
         return Map.of();
     }
 
-    /**
-     * Creates a format-specific tiered directory for warm nodes.
-     *
-     * <p>Override this to provide a custom directory that handles file operations (openInput,
-     * fileLength, etc.) for this format's files on warm nodes. The returned directory should
-     * implement {@link org.opensearch.index.store.RemoteSyncAwareDirectory} if it needs
-     * afterSyncToRemote callbacks.
-     *
-     * <p>Returning {@code null} (the default) means this format's files are handled by the
-     * standard TieredDirectory via FileCache and remote metadata.
-     *
-     * <p><b>Important:</b> The returned directory shares {@code localDirectory} with TieredDirectory.
-     * Its {@code close()} method must NOT close {@code localDirectory} (e.g., must not call
-     * {@code super.close()} if it extends FilterDirectory wrapping localDirectory). Only clean up
-     * format-specific resources. The shared localDirectory is closed separately by TieredDirectory.
-     *
-     * @param localDirectory    the subdirectory-aware local directory for reading files from disk
-     * @param remoteDirectory   the remote segment store directory for reading files from remote
-     * @param indexSettings     the index settings for this shard
-     * @return a format-specific directory, or {@code null} to use the default TieredDirectory
-     */
-    default Directory getTieredDirectory(
-        Directory localDirectory,
-        RemoteSegmentStoreDirectory remoteDirectory,
-        IndexSettings indexSettings
-    ) {
-        return null;
-    }
 }

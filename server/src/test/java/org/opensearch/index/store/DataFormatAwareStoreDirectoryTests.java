@@ -1017,18 +1017,13 @@ public class DataFormatAwareStoreDirectoryTests extends OpenSearchTestCase {
         IndexMetadata metadata = IndexMetadata.builder("test-index").settings(settings).numberOfShards(1).numberOfReplicas(0).build();
         IndexSettings idxSettings = new IndexSettings(metadata, Settings.EMPTY);
 
-        DataFormatAwareStoreDirectory dir = DataFormatAwareStoreDirectory.withDirectoryDelegate(
-            idxSettings,
-            syncAwareDir,
-            shardPath,
-            registry
-        );
+        DataFormatAwareStoreDirectory dir = new DataFormatAwareStoreDirectory(idxSettings, syncAwareDir, shardPath, registry, true);
         dir.afterSyncToRemote("_0.cfe");
         org.mockito.Mockito.verify(syncAwareDir).afterSyncToRemote("_0.cfe");
     }
 
     public void testDirectDelegateConstructorDoesNotDoubleWrap() throws IOException {
-        // withDirectDelegate should use the delegate as-is
+        // The directDelegate=true constructor should use the delegate as-is
         PluginsService pluginsService = mock(PluginsService.class);
         when(pluginsService.filterPlugins(DataFormatPlugin.class)).thenReturn(List.of());
         when(pluginsService.filterPlugins(SearchBackEndPlugin.class)).thenReturn(List.of());
@@ -1042,12 +1037,7 @@ public class DataFormatAwareStoreDirectoryTests extends OpenSearchTestCase {
         IndexSettings idxSettings = new IndexSettings(metadata, Settings.EMPTY);
 
         SubdirectoryAwareDirectory subdirAware = new SubdirectoryAwareDirectory(fsDirectory, shardPath);
-        DataFormatAwareStoreDirectory dir = DataFormatAwareStoreDirectory.withDirectoryDelegate(
-            idxSettings,
-            subdirAware,
-            shardPath,
-            registry
-        );
+        DataFormatAwareStoreDirectory dir = new DataFormatAwareStoreDirectory(idxSettings, subdirAware, shardPath, registry, true);
 
         // The delegate should be the SubdirectoryAwareDirectory directly, not wrapped again
         org.apache.lucene.store.Directory delegate = org.apache.lucene.store.FilterDirectory.unwrap(dir);

@@ -25,13 +25,9 @@ public class DirectoryUtils {
      * Walks the {@link FilterDirectory} chain to find the underlying {@link FSDirectory}.
      * Returns immediately if the given directory is already an FSDirectory.
      *
-     * <p>This method only unwraps {@link FilterDirectory} instances. Custom Directory subclasses
-     * that wrap an FSDirectory without extending FilterDirectory will not be unwrapped — this is
-     * intentional, as all directory wrappers in the OpenSearch codebase use FilterDirectory.
-     *
      * @param dir the directory to unwrap
      * @return the underlying FSDirectory
-     * @throws IllegalStateException if no FSDirectory is found in the FilterDirectory chain
+     * @throws IllegalStateException if no FSDirectory is found in the chain
      */
     public static FSDirectory getFSDirectory(Directory dir) {
         Directory current = dir;
