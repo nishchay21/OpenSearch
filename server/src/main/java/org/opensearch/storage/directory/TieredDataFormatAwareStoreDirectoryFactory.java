@@ -127,13 +127,27 @@ public class TieredDataFormatAwareStoreDirectoryFactory implements DataFormatAwa
         // 3. Build a per-format TieredDirectory for each registered data format.
         // Each format gets its own TieredDirectory instance so that format-specific
         // prefetch and caching behavior can be configured independently.
-        // The SubdirectoryAwareDirectory handles path resolution for all formats
-        // (e.g., "parquet/_0.pqt" → absolute path), so each TieredDirectory shares
-        // the same local directory but can have independent remote/cache behavior.
+        // If a format declares a custom remoteStoreType (e.g., "native-s3"), the
+        // factory resolves it to a repository at shard creation time. Otherwise the
+        // format shares the default RemoteSegmentStoreDirectory.
         Map<String, DataFormatDescriptor> descriptors = dataFormatRegistry.getFormatDescriptors(indexSettings);
         Map<String, Directory> formatDirectories = new HashMap<>();
         for (Map.Entry<String, DataFormatDescriptor> entry : descriptors.entrySet()) {
             String formatName = entry.getKey();
+            DataFormatDescriptor descriptor = entry.getValue();
+
+            // If the format needs native store for warm reads, the factory obtains
+            // the NativeStoreRepository from the shard's repository (which already
+            // has it wired via NativeRemoteObjectStoreProvider at repository creation).
+            // TODO: Get NativeStoreRepository from remoteDirectory's underlying repository
+            // and wire it as the remote directory for this format's TieredDirectory.
+            if (descriptor.nativeStoreSupported()) {
+                logger.debug(
+                    "Format [{}] requires native store for warm reads — will be wired when Native Repository integration is implemented",
+                    formatName
+                );
+            }
+
             TieredDirectory formatTiered = new TieredDirectory(
                 subdirAware,
                 remoteDirectory,
