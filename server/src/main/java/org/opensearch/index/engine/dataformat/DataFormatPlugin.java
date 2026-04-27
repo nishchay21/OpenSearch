@@ -8,9 +8,11 @@
 
 package org.opensearch.index.engine.dataformat;
 
+import org.apache.lucene.store.Directory;
 import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.store.FormatChecksumStrategy;
+import org.opensearch.index.store.RemoteSegmentStoreDirectory;
 
 import java.util.Map;
 

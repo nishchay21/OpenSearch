@@ -81,9 +81,10 @@ public class DataFormatAwareStoreDirectory extends FilterDirectory implements Re
     private static final FormatChecksumStrategy DEFAULT_CHECKSUM_STRATEGY = new GenericCRC32ChecksumHandler();
 
     /**
-     * Constructs a DataFormatAwareStoreDirectory with a {@link DataFormatRegistry} for format-aware
-     * checksum calculation and other format-specific operations.
+     * Constructs a DataFormatAwareStoreDirectory that auto-wraps the delegate in
+     * {@link SubdirectoryAwareDirectory}.
      *
+     * @param indexSettings       the index settings
      * @param delegate            the underlying FSDirectory (typically for &lt;shard&gt;/index/)
      * @param shardPath           the shard path for resolving subdirectories
      * @param dataFormatRegistry  registry providing format-specific checksum handlers

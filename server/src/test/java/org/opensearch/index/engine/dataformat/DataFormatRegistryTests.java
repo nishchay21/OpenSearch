@@ -8,6 +8,7 @@
 
 package org.opensearch.index.engine.dataformat;
 
+import org.apache.lucene.store.Directory;
 import org.opensearch.Version;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.common.settings.Settings;
