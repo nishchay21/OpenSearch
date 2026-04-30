@@ -103,10 +103,12 @@ public class LuceneCommitter extends SafeBootstrapCommitter {
      * @throws IllegalStateException if this committer is closed
      */
     @Override
-    public synchronized void commit(Map<String, String> commitData) throws IOException {
+    public synchronized CommitResult commit(Map<String, String> commitData) throws IOException {
         ensureOpen();
         indexWriter.setLiveCommitData(commitData.entrySet());
         indexWriter.commit();
+        SegmentInfos committed = SegmentInfos.readLatestCommit(indexWriter.getDirectory());
+        return new CommitResult(committed.getSegmentsFileName(), committed.getGeneration());
     }
 
     /**
@@ -285,7 +287,9 @@ public class LuceneCommitter extends SafeBootstrapCommitter {
         for (IndexCommit ic : commits) {
             String serialized = ic.getUserData().get(CatalogSnapshot.CATALOG_SNAPSHOT_KEY);
             if (serialized != null && serialized.isEmpty() == false) {
-                result.put(ic, DataformatAwareCatalogSnapshot.deserializeFromString(serialized, resolver));
+                DataformatAwareCatalogSnapshot dfa = DataformatAwareCatalogSnapshot.deserializeFromString(serialized, resolver);
+                dfa.setLastCommitInfo(ic.getSegmentsFileName(), ic.getGeneration());
+                result.put(ic, dfa);
             } else {
                 // serialized can be null for the initial empty commit from store.createEmpty() during
                 // empty store recovery, since that commit has no CatalogSnapshot data.

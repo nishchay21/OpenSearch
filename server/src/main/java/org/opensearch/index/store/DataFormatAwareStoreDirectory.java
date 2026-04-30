@@ -230,7 +230,7 @@ public class DataFormatAwareStoreDirectory extends FilterDirectory {
      * Public API used by RemoteSegmentStoreDirectory.
      */
     public String calculateUploadChecksum(String name) throws IOException {
-        return Long.toString(calculateChecksum(name));
+        return Long.toString(calculateChecksum(name), Character.MAX_RADIX);
     }
 
     /**
@@ -243,6 +243,9 @@ public class DataFormatAwareStoreDirectory extends FilterDirectory {
      */
     public FormatChecksumStrategy getChecksumStrategy(String format) {
         return checksumStrategies.get(format);
+    }
+
+    /**
      * Registers a {@link FormatChecksumStrategy} for a data format.
      * Overrides any existing strategy
      *
