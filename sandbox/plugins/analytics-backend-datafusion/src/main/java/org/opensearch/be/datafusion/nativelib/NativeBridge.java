@@ -14,6 +14,7 @@ import org.opensearch.be.datafusion.stats.NativeExecutorsStats;
 import org.opensearch.core.action.ActionListener;
 import org.opensearch.nativebridge.spi.NativeCall;
 import org.opensearch.nativebridge.spi.NativeLibraryLoader;
+import org.opensearch.plugins.NativeStoreHandle;
 
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.Linker;
@@ -139,6 +140,7 @@ public final class NativeBridge {
                 ValueLayout.JAVA_LONG,
                 ValueLayout.ADDRESS,
                 ValueLayout.ADDRESS,
+                ValueLayout.JAVA_LONG,
                 ValueLayout.JAVA_LONG
             )
         );
@@ -561,12 +563,19 @@ public final class NativeBridge {
     /**
      * Creates a native reader. Returns an opaque native pointer.
      * Freed by {@link #closeDatafusionReader}.
+     *
+     * @param path the directory path
+     * @param files the file names
+     * @param dataformatAwareStoreHandle per-format native store handle (null = local, live = use store pointer)
      */
-    public static long createDatafusionReader(String path, String[] files) {
+    public static long createDatafusionReader(String path, String[] files, NativeStoreHandle dataformatAwareStoreHandle) {
+        long storePtr = (dataformatAwareStoreHandle != null && dataformatAwareStoreHandle.isLive())
+            ? dataformatAwareStoreHandle.getPointer()
+            : 0L;
         try (var call = new NativeCall()) {
             var p = call.str(path);
             var f = call.strArray(files);
-            return call.invoke(CREATE_READER, p.segment(), p.len(), f.ptrs(), f.lens(), f.count());
+            return call.invoke(CREATE_READER, p.segment(), p.len(), f.ptrs(), f.lens(), f.count(), storePtr);
         }
     }
 
