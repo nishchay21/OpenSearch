@@ -158,7 +158,9 @@ public class TieredSubdirectoryAwareDirectory extends FilterDirectory implements
             } catch (IOException e) {
                 size = 0;
             }
-            strategies.onUploaded(file, remoteDirectory.getRemoteBasePath(), blobKey, size);
+            StoreStrategyRegistry.Match match = strategies.matchFor(file);
+            String format = match != null ? match.format().name() : "";
+            strategies.onUploaded(file, remoteDirectory.getRemoteBasePath(format), blobKey, size);
             // On warm, no local parquet files should remain — delete after sync.
             // Safe because: (1) the file is now REMOTE in the registry, so new readers
             // route to remote, and (2) TieredObjectStore retries from remote if local NotFound.

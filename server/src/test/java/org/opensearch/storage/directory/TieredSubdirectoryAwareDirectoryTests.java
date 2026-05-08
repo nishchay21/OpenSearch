@@ -92,9 +92,10 @@ public class TieredSubdirectoryAwareDirectoryTests extends TieredStorageBaseTest
     public void setup() throws IOException {
         setupRemoteSegmentStoreDirectory();
 
-        // Stub getBlobContainer().path() so getRemoteBasePath() doesn't NPE in afterSyncToRemote tests
+        // Stub getBlobContainer().path() so getRemoteBasePath(format) doesn't NPE in afterSyncToRemote tests
+        // In production, getRemoteBasePath("parquet") returns a path that includes the format subdirectory
         BlobContainer mockBlobContainer = mock(BlobContainer.class);
-        when(mockBlobContainer.path()).thenReturn(new BlobPath().add("test-base-path"));
+        when(mockBlobContainer.path()).thenReturn(new BlobPath().add("test-base-path").add("parquet"));
         when(((RemoteDirectory) remoteDataDirectory).getBlobContainer()).thenReturn(mockBlobContainer);
 
         populateMetadata();
@@ -407,6 +408,22 @@ public class TieredSubdirectoryAwareDirectoryTests extends TieredStorageBaseTest
         );
     }
 
+    public void testAfterSyncToRemotePassesCorrectFormatToGetRemoteBasePath() throws IOException {
+        WithRegistry w = buildDirectoryWithParquetFormat();
+        String parquetFile = "parquet/seg_format_path.parquet";
+        addParquetMetadataEntry(parquetFile, "seg_format_path.parquet__UUID1");
+        w.directory.afterSyncToRemote(parquetFile);
+        // remotePath builds: basePath + blobKey. basePath from getRemoteBasePath("parquet")
+        // returns "test-base-path/parquet/" (mock BlobPath includes format subdirectory),
+        // so the path should be "test-base-path/parquet/seg_format_path.parquet__UUID1"
+        String expectedUploadKey = shardPath.getDataPath().resolve(parquetFile).toString();
+        verify(w.storeHandler).onUploaded(
+            org.mockito.ArgumentMatchers.eq(expectedUploadKey),
+            org.mockito.ArgumentMatchers.eq("test-base-path/parquet/seg_format_path.parquet__UUID1"),
+            org.mockito.ArgumentMatchers.anyLong()
+        );
+    }
+
     public void testAfterSyncToRemoteFormatFileWithoutRemoteSyncAware() throws IOException {
         directory = buildDirectoryWithParquetFormat().directory;
         try {
@@ -628,7 +645,7 @@ public class TieredSubdirectoryAwareDirectoryTests extends TieredStorageBaseTest
     }
 
     /** Minimal test strategy for "parquet" wiring. */
-    private static final class TestParquetStrategy implements StoreStrategy {
+    private static final class TestParquetStrategy extends StoreStrategy {
         private final DataFormatStoreHandlerFactory factory;
 
         TestParquetStrategy(DataFormatStoreHandlerFactory factory) {
