@@ -569,9 +569,15 @@ public final class NativeBridge {
      * @param dataformatAwareStoreHandle per-format native store handle (null = local, live = use store pointer)
      */
     public static long createDatafusionReader(String path, String[] files, NativeStoreHandle dataformatAwareStoreHandle) {
-        long storePtr = (dataformatAwareStoreHandle != null && dataformatAwareStoreHandle.isLive())
-            ? dataformatAwareStoreHandle.getPointer()
-            : 0L;
+        long storePtr = 0L;
+        if (dataformatAwareStoreHandle != null) {
+            try {
+                storePtr = dataformatAwareStoreHandle.getPointer();
+            } catch (IllegalStateException e) {
+                // Handle closed between check and extraction — use default (local)
+                storePtr = 0L;
+            }
+        }
         try (var call = new NativeCall()) {
             var p = call.str(path);
             var f = call.strArray(files);

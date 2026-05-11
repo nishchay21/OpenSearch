@@ -794,25 +794,31 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
                 // extract native store handles for the Store before passing to the factory.
                 Map<DataFormat, StoreStrategy> storeStrategies = dataFormatRegistry.getStoreStrategies(this.indexSettings);
                 NativeStoreRepository nativeStore = resolveNativeStore(repositoriesService);
-                StoreStrategyRegistry storeStrategyRegistry = StoreStrategyRegistry.open(
-                    path,
-                    true,
-                    nativeStore,
-                    storeStrategies,
-                    (RemoteSegmentStoreDirectory) remoteDirectory
-                );
-                dataformatAwareStoreHandles = storeStrategyRegistry.getFormatStoreHandles();
-                directory = dataFormatAwareStoreDirectoryFactory.newDataFormatAwareStoreDirectory(
-                    this.indexSettings,
-                    shardId,
-                    path,
-                    directoryFactory,
-                    checksumStrategies,
-                    storeStrategyRegistry,
-                    (RemoteSegmentStoreDirectory) remoteDirectory,
-                    fileCache,
-                    threadPool
-                );
+                StoreStrategyRegistry storeStrategyRegistry = null;
+                try {
+                    storeStrategyRegistry = StoreStrategyRegistry.open(
+                        path,
+                        true,
+                        nativeStore,
+                        storeStrategies,
+                        (RemoteSegmentStoreDirectory) remoteDirectory
+                    );
+                    dataformatAwareStoreHandles = storeStrategyRegistry.getFormatStoreHandles();
+                    directory = dataFormatAwareStoreDirectoryFactory.newDataFormatAwareStoreDirectory(
+                        this.indexSettings,
+                        shardId,
+                        path,
+                        directoryFactory,
+                        checksumStrategies,
+                        storeStrategyRegistry,
+                        (RemoteSegmentStoreDirectory) remoteDirectory,
+                        fileCache,
+                        threadPool
+                    );
+                } catch (Exception e) {
+                    IOUtils.closeWhileHandlingException(storeStrategyRegistry);
+                    throw e;
+                }
             } else if (FeatureFlags.isEnabled(FeatureFlags.WRITABLE_WARM_INDEX_SETTING) &&
             // TODO : Need to remove this check after support for hot indices is added in Composite Directory
                 this.indexSettings.isWarmIndex()) {
