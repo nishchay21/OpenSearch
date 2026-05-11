@@ -10,6 +10,7 @@ package org.opensearch.index.engine.exec.coord;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.common.CheckedFunction;
 import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.common.concurrent.GatedCloseable;
 import org.opensearch.common.concurrent.GatedConditionalCloseable;
@@ -57,6 +58,7 @@ public class CatalogSnapshotManager implements Closeable {
     private final IndexFileDeleter indexFileDeleter;
     private final CatalogSnapshotDeletionPolicy deletionPolicy;
     private final List<CatalogSnapshotLifecycleListener> snapshotListeners;
+    private final CheckedFunction<CatalogSnapshot, byte[], IOException> snapshotSerializer;
 
     /**
      * Creates a new {@link DataformatAwareCatalogSnapshot} for use in tests.
@@ -118,6 +120,15 @@ public class CatalogSnapshotManager implements Closeable {
             shardPath,
             commitFileManager
         );
+        this.snapshotSerializer = commitFileManager::serializeToCommitFormat;
+    }
+
+    /**
+     * Serializes the given {@link CatalogSnapshot} using the registered
+     * {@link org.opensearch.index.engine.exec.CommitFileManager#serializeToCommitFormat}.
+     */
+    public byte[] serializeToCommitFormat(CatalogSnapshot catalogSnapshot) throws IOException {
+        return snapshotSerializer.apply(catalogSnapshot);
     }
 
     /**
