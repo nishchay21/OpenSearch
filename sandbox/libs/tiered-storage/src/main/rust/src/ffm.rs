@@ -220,6 +220,8 @@ pub extern "C" fn ts_remove_file(
     let path = unsafe { str_from_raw(path_ptr, path_len) }
         .map_err(|e| format!("ts_remove_file path: {}", e))?;
 
+    // Strip leading "/" — registry keys are stored without it (same as ts_register_files)
+    let path = path.strip_prefix('/').unwrap_or(path);
     store.registry().remove(path, false);
 
     native_bridge_common::log_debug!("ffm: ts_remove_file path='{}'", path);

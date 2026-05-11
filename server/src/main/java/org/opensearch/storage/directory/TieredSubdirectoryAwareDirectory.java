@@ -96,11 +96,11 @@ public class TieredSubdirectoryAwareDirectory extends FilterDirectory implements
     @Override
     public IndexInput openInput(String name, IOContext context) throws IOException {
         if (isFormatFile(name)) {
-            // Check if file exists in remote directory (already synced) — route to remote.
-            // Otherwise read from local (translog bump edge case, file not yet synced).
             if (remoteDirectory.getExistingRemoteFilename(name) != null) {
+                logger.info("[TieredSubdirAwareDir] openInput REMOTE format file={}", name);
                 return remoteDirectory.openInput(name, context);
             }
+            logger.info("[TieredSubdirAwareDir] openInput LOCAL format file={}", name);
             return in.openInput(name, context);
         }
         return tieredDirectory.openInput(name, context);
@@ -109,10 +109,11 @@ public class TieredSubdirectoryAwareDirectory extends FilterDirectory implements
     @Override
     public long fileLength(String name) throws IOException {
         if (isFormatFile(name)) {
-            // Same routing as openInput — check remote first.
             if (remoteDirectory.getExistingRemoteFilename(name) != null) {
+                logger.info("[TieredSubdirAwareDir] fileLength REMOTE format file={}", name);
                 return remoteDirectory.fileLength(name);
             }
+            logger.info("[TieredSubdirAwareDir] fileLength LOCAL format file={}", name);
             return in.fileLength(name);
         }
         return tieredDirectory.fileLength(name);
@@ -121,7 +122,10 @@ public class TieredSubdirectoryAwareDirectory extends FilterDirectory implements
     @Override
     public String[] listAll() throws IOException {
         Set<String> all = new HashSet<>(Arrays.asList(tieredDirectory.listAll()));
-        return all.stream().sorted().toArray(String[]::new);
+        String[] result = all.stream().sorted().toArray(String[]::new);
+        logger.info("[TieredSubdirAwareDir] listAll count={}, files={}, remoteMetadataKeys={}",
+            result.length, Arrays.toString(result), remoteDirectory.getSegmentsUploadedToRemoteStore().keySet());
+        return result;
     }
 
     @Override
@@ -132,11 +136,19 @@ public class TieredSubdirectoryAwareDirectory extends FilterDirectory implements
     @Override
     public void deleteFile(String name) throws IOException {
         if (isFormatFile(name)) {
-            strategies.onRemoved(name);
+            // Log remote metadata state to verify behavior
+            String remoteName = remoteDirectory.getExistingRemoteFilename(name);
+            logger.info("[TieredSubdirAwareDir] deleteFile FORMAT file={}, remoteFilename={}, remoteMetadataKeys={}",
+                name, remoteName, remoteDirectory.getSegmentsUploadedToRemoteStore().keySet());
+            // On warm, format files are remote-only. Recovery cleanup calls deleteFile
+            // because listAll() exposes them but they're not in Lucene's segments_N.
+            // Don't remove from registry — the file still exists on remote and is needed
+            // for DataFusion queries. Just delete local copy if any.
+            logger.info("[TieredSubdirAwareDir] deleteFile FORMAT file={}, skipping registry removal (warm remote-only)", name);
             try {
                 in.deleteFile(name);
             } catch (NoSuchFileException e) {
-                // Expected on read-only warm — file was never local or already evicted
+                // Expected — file was never local or already evicted
             }
             return;
         }
@@ -147,6 +159,7 @@ public class TieredSubdirectoryAwareDirectory extends FilterDirectory implements
     public void afterSyncToRemote(String file) {
         if (isFormatFile(file)) {
             String blobKey = remoteDirectory.getExistingRemoteFilename(file);
+            logger.info("[TieredSubdirAwareDir] afterSyncToRemote FORMAT file={}, blobKey={}", file, blobKey);
             if (blobKey == null) {
                 throw new IllegalStateException(
                     "afterSyncToRemote called for format file [" + file + "] but no remote filename found in metadata"

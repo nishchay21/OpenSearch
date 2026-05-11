@@ -99,7 +99,7 @@ import static org.opensearch.index.engine.exec.coord.CatalogSnapshotManager.crea
  * @opensearch.experimental
  */
 @ExperimentalApi
-public class DataFormatAwareNRTReplicationEngine implements Indexer {
+public class DataFormatAwareReadOnlyEngine implements Indexer {
 
     private volatile CatalogSnapshot lastCommittedSnapshot;
     private final Object lastCommittedSnapshotMutex = new Object();
@@ -150,8 +150,8 @@ public class DataFormatAwareNRTReplicationEngine implements Indexer {
     private final SetOnce<Exception> failedEngine = new SetOnce<>();
     private final CountDownLatch closedLatch = new CountDownLatch(1);
 
-    public DataFormatAwareNRTReplicationEngine(EngineConfig engineConfig) {
-        this.logger = Loggers.getLogger(DataFormatAwareNRTReplicationEngine.class, engineConfig.getShardId());
+    public DataFormatAwareReadOnlyEngine(EngineConfig engineConfig) {
+        this.logger = Loggers.getLogger(DataFormatAwareReadOnlyEngine.class, engineConfig.getShardId());
         this.engineConfig = engineConfig;
         this.shardId = engineConfig.getShardId();
         this.store = engineConfig.getStore();
@@ -261,7 +261,7 @@ public class DataFormatAwareNRTReplicationEngine implements Indexer {
                 () -> localCheckpointTracker,
                 translogUUID,
                 NRTReplicaTranslogOps.createTranslogEventListener(this::failEngine, this::translogManager, shardId),
-                DataFormatAwareNRTReplicationEngine.this,
+                DataFormatAwareReadOnlyEngine.this,
                 engineConfig.getTranslogFactory(),
                 engineConfig.getStartedPrimarySupplier(),
                 TranslogOperationHelper.create(engineConfig)
@@ -269,7 +269,7 @@ public class DataFormatAwareNRTReplicationEngine implements Indexer {
             this.translogManager = translogManagerRef;
 
             success = true;
-            logger.trace("created new DataFormatAwareNRTReplicationEngine");
+            logger.trace("created new DataFormatAwareReadOnlyEngine");
         } catch (IOException | TranslogCorruptedException e) {
             throw new EngineCreationFailureException(shardId, "failed to create engine", e);
         } finally {
@@ -439,20 +439,17 @@ public class DataFormatAwareNRTReplicationEngine implements Indexer {
 
     @Override
     public Engine.IndexResult index(Engine.Index index) throws IOException {
-        ensureOpen();
-        return NRTReplicaTranslogOps.index(translogManager, localCheckpointTracker, index);
+        throw new UnsupportedOperationException("Indexing not supported on warm read-only engine");
     }
 
     @Override
     public Engine.DeleteResult delete(Engine.Delete delete) throws IOException {
-        ensureOpen();
-        return NRTReplicaTranslogOps.delete(translogManager, localCheckpointTracker, delete);
+        throw new UnsupportedOperationException("Delete not supported on warm read-only engine");
     }
 
     @Override
     public Engine.NoOpResult noOp(Engine.NoOp noOp) throws IOException {
-        ensureOpen();
-        return NRTReplicaTranslogOps.noOp(translogManager, localCheckpointTracker, noOp);
+        throw new UnsupportedOperationException("NoOp not supported on warm read-only engine");
     }
 
     @Override
@@ -483,7 +480,7 @@ public class DataFormatAwareNRTReplicationEngine implements Indexer {
 
     @Override
     public Closeable acquireHistoryRetentionLock() {
-        throw new UnsupportedOperationException("Not supported on DataFormatAwareNRTReplicationEngine");
+        throw new UnsupportedOperationException("Not supported on DataFormatAwareReadOnlyEngine");
     }
 
     @Override
@@ -494,7 +491,7 @@ public class DataFormatAwareNRTReplicationEngine implements Indexer {
         boolean requiredFullRange,
         boolean accurateCount
     ) throws IOException {
-        throw new UnsupportedOperationException("Not supported on DataFormatAwareNRTReplicationEngine");
+        throw new UnsupportedOperationException("Not supported on DataFormatAwareReadOnlyEngine");
     }
 
     @Override
@@ -561,33 +558,12 @@ public class DataFormatAwareNRTReplicationEngine implements Indexer {
 
     @Override
     public void flush(boolean force, boolean waitIfOngoing) {
-        ensureOpen();
-        // Skip flushing for warm indices
-        if (engineConfig.getIndexSettings().isWarmIndex()) {
-            return;
-        }
-        try (ReleasableLock lock = readLock.acquire()) {
-            ensureOpen();
-            if (flushLock.tryLock() == false) {
-                if (waitIfOngoing == false) {
-                    return;
-                }
-                flushLock.lock();
-            }
-            try {
-                commitCatalogSnapshot();
-            } catch (IOException e) {
-                maybeFailEngine("flush", e);
-                throw new FlushFailedEngineException(shardId, e);
-            } finally {
-                flushLock.unlock();
-            }
-        }
+        // No-op on read-only warm engine — no commits
     }
 
     @Override
     public void flush() {
-        flush(false, true);
+        // No-op
     }
 
     @Override
@@ -598,7 +574,9 @@ public class DataFormatAwareNRTReplicationEngine implements Indexer {
         boolean upgrade,
         boolean upgradeOnlyAncientSegments,
         String forceMergeUUID
-    ) throws EngineException, IOException {}
+    ) throws EngineException, IOException {
+        // No-op on read-only warm engine — no merges
+    }
 
     // Reads SegmentInfos from disk because only CatalogSnapshot is held in memory.
     public GatedCloseable<IndexCommit> acquireLastIndexCommit(boolean flushFirst) throws EngineException {
@@ -656,23 +634,7 @@ public class DataFormatAwareNRTReplicationEngine implements Indexer {
             assert rwl.isWriteLockedByCurrentThread() || failEngineLock.isHeldByCurrentThread()
                 : "Either the write lock must be held or the engine must be currently failing";
             try {
-                if (engineConfig.getIndexSettings().isWarmIndex() == false) {
-                    try {
-                        // Bump SI counter on final commit to avoid filename collisions on failover.
-                        final boolean bumpCounter = engineConfig.getIndexSettings().isRemoteStoreEnabled() == false
-                            && engineConfig.getIndexSettings().isAssignedOnRemoteNode() == false;
-                        commitCatalogSnapshot(bumpCounter);
-                    } catch (IOException e) {
-                        // Mark store corrupted unless closing due to engine failure.
-                        if (failEngineLock.isHeldByCurrentThread() == false && store.isMarkedCorrupted() == false) {
-                            try {
-                                store.markStoreCorrupted(e);
-                            } catch (IOException ex) {
-                                logger.warn("Unable to mark store corrupted", ex);
-                            }
-                        }
-                    }
-                }
+                // Read-only warm: no commit on close, just close readers and translog
                 List<Closeable> closeables = new ArrayList<>(readerManagers.values());
                 closeables.add(catalogSnapshotManager);
                 closeables.add(translogManager);
@@ -994,7 +956,7 @@ public class DataFormatAwareNRTReplicationEngine implements Indexer {
                     } catch (NoSuchFileException ignored) {
                         // already gone — treat as success
                     } catch (IOException e) {
-                        LogManager.getLogger(DataFormatAwareNRTReplicationEngine.class)
+                        LogManager.getLogger(DataFormatAwareReadOnlyEngine.class)
                             .warn("Failed to delete file [{}] in format [{}]: {}", name, formatName, e.getMessage());
                         failed.add(name);
                     }

@@ -87,6 +87,10 @@ impl fmt::Display for TieredStorageRegistry {
 impl FileRegistry for TieredStorageRegistry {
     fn register(&self, key: &str, value: TieredFileEntry) {
         self.files.insert(key.to_string(), value);
+        native_bridge_common::log_info!(
+            "TieredStorageRegistry: register key='{}', total_files={}",
+            key, self.files.len()
+        );
     }
 
     fn get(&self, key: &str) -> Option<ReadGuard<'_>> {
@@ -101,7 +105,16 @@ impl FileRegistry for TieredStorageRegistry {
     }
 
     fn remove(&self, key: &str, force: bool) -> bool {
-        if force {
+        // Log all entries before remove
+        let entries_before: Vec<String> = self.files.iter()
+            .map(|entry| format!("  '{}' ref_count={}", entry.key(), entry.value().ref_count()))
+            .collect();
+        native_bridge_common::log_info!(
+            "TieredStorageRegistry: BEFORE remove key='{}', force={}, entries=[\n{}\n]",
+            key, force, entries_before.join("\n")
+        );
+
+        let result = if force {
             self.files.remove(key).is_some()
         } else {
             // Only remove if ref_count == 0.
@@ -116,7 +129,17 @@ impl FileRegistry for TieredStorageRegistry {
                 }
                 dashmap::mapref::entry::Entry::Vacant(_) => false,
             }
-        }
+        };
+
+        // Log all entries after remove
+        let entries_after: Vec<String> = self.files.iter()
+            .map(|entry| format!("  '{}' ref_count={}", entry.key(), entry.value().ref_count()))
+            .collect();
+        native_bridge_common::log_info!(
+            "TieredStorageRegistry: AFTER remove key='{}', removed={}, entries=[\n{}\n]",
+            key, result, entries_after.join("\n")
+        );
+        result
     }
 
     fn remove_by_prefix(&self, prefix: &str, force: bool) -> usize {

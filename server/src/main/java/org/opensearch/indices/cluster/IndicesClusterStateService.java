@@ -500,6 +500,7 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent imple
     private void removeShards(final ClusterState state) {
         final String localNodeId = state.nodes().getLocalNodeId();
         assert localNodeId != null;
+        logger.info("[IndicesClusterStateService] removeShards called on node={}", localNodeId);
 
         // remove shards based on routing nodes (no deletion of data)
         RoutingNode localRoutingNode = state.getRoutingNodes().node(localNodeId);
