@@ -8,6 +8,8 @@
 
 package org.opensearch.index.engine.exec.coord;
 
+import org.apache.lucene.index.SegmentInfos;
+import org.apache.lucene.util.Version;
 import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.common.util.concurrent.AbstractRefCounted;
 import org.opensearch.core.common.io.stream.StreamInput;
@@ -271,19 +273,69 @@ public abstract class CatalogSnapshot implements Writeable, Cloneable {
      * @param file the file name
      * @return the format major version
      */
-    public abstract int getFormatVersionForFile(String file);
+    public abstract Version getFormatVersionForFile(String file);
 
     /**
-     * Serializes this CatalogSnapshot into SegmentInfos bytes for the remote metadata file.
-     * Each subclass knows its own serialization format:
+     * Initial seed for {@code maxVersion} in {@link org.opensearch.index.store.Store.MetadataSnapshot
+     * #loadMetadata(CatalogSnapshot, org.apache.lucene.store.Directory, org.apache.logging.log4j.Logger,
+     * boolean)}. SI-backed snapshots return {@code segmentInfos.getMinSegmentLuceneVersion()};
+     * DFA snapshots return {@code null}. May be {@code null} even on SI (in-memory infos).
+     */
+    public abstract Version getMinSegmentFormatVersion();
+
+    /**
+     * Returns the version snapshot was committed under.
+     * Used to populate remote-store checkpoint metadata so downstream consumers can interpret
+     * per-file encodings consistently.
      *
-     * TODO: When CompositeEngineCatalogSnapshot is added, implement this method
-     *       creating synthetic SegmentInfos with CatalogSnapshot serialized into userData.
+     * <p>Implementations:
+     * <ul>
+     *   <li>Lucene-backed snapshots return the version read from {@code SegmentInfos}.</li>
+     *   <li>DFA snapshots return the version tracked at commit time for their underlying format.</li>
+     * </ul>
      *
-     * @return serialized bytes
-     * @throws IOException in case of I/O error
+     * @return the commit-time Lucene version
+     */
+    public abstract Version getCommitDataFormatVersion();
+
+    /** Total number of live documents in this snapshot. SI → Lucene live docs; DFA → 0 (TODO). */
+    public abstract long getNumDocs();
+
+    /**
+     * Name of the top-level commit file, or {@code null} if not yet committed.
+     * Format-neutral: Lucene-backed snapshots use {@code segments_N} but callers must not
+     * assume any naming convention. {@code MetadataSnapshot.loadMetadata} skips the
+     * hash-full-file step when this is {@code null}.
+     */
+    public abstract String getLastCommitFileName();
+
+    /**
+     * Returns the Lucene {@code segments_N} generation to use when serializing this snapshot
+     * into a synthetic {@code SegmentInfos} or building a {@code ReplicationCheckpoint}.
+     * <p>
+     * For {@code SegmentInfosCatalogSnapshot}, this is the Lucene generation from {@code SegmentInfos}.
+     * For {@code DataformatAwareCatalogSnapshot}, this is the generation set via
+     * {@link DataformatAwareCatalogSnapshot#setLastCommitInfo}, falling back to {@link #getGeneration()}.
+     */
+    public long getLastCommitGeneration() {
+        return getGeneration();
+    }
+
+    /**
+     * Returns the Lucene {@link SegmentInfos} bytes written into the remote metadata file. Bytes
+     * must describe this snapshot's commit — implementations must not re-read {@code segments_N}
+     * from disk at call time (would race with concurrent flush).
+     *
+     * @throws IOException on serialization error
+     * @throws IllegalStateException if bytes were expected to be pre-captured but weren't
      */
     public abstract byte[] serialize() throws IOException;
+
+    /**
+     * Returns the underlying SegmentInfos for Lucene-backed snapshots.
+     * Throws UnsupportedOperationException for non-Lucene snapshots.
+     */
+    public abstract SegmentInfos getSegmentInfos();
 
     /**
      * Returns the canonical file names for upload to remote store.

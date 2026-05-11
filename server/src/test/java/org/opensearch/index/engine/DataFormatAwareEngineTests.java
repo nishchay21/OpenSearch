@@ -353,7 +353,7 @@ public class DataFormatAwareEngineTests extends OpenSearchTestCase {
 
             try (GatedCloseable<CatalogSnapshot> ref = engine.acquireSnapshot()) {
                 CatalogSnapshot snapshot = ref.get();
-                assertThat(snapshot.getGeneration(), equalTo(1L));
+                assertThat(snapshot.getGeneration(), equalTo(2L));
                 assertThat(snapshot.getSegments().size(), equalTo(1));
 
                 org.opensearch.index.engine.exec.Segment segment = snapshot.getSegments().get(0);
@@ -374,9 +374,9 @@ public class DataFormatAwareEngineTests extends OpenSearchTestCase {
 
     public void testRefreshAdvancesSnapshotGeneration() throws IOException {
         try (DataFormatAwareEngine engine = createDFAEngine(store, createTempDir())) {
-            // Initial snapshot generation is 0
+            // Initial snapshot generation is 1 (engine-open bump advances from 0 to 1)
             try (GatedCloseable<CatalogSnapshot> ref = engine.acquireSnapshot()) {
-                assertThat(ref.get().getGeneration(), equalTo(0L));
+                assertThat(ref.get().getGeneration(), equalTo(1L));
                 assertThat(ref.get().getSegments().size(), equalTo(0));
             }
 
@@ -384,7 +384,7 @@ public class DataFormatAwareEngineTests extends OpenSearchTestCase {
             engine.refresh("first");
 
             try (GatedCloseable<CatalogSnapshot> ref = engine.acquireSnapshot()) {
-                assertThat(ref.get().getGeneration(), equalTo(1L));
+                assertThat(ref.get().getGeneration(), equalTo(2L));
                 assertThat(ref.get().getSegments().size(), equalTo(1));
             }
 
@@ -392,7 +392,7 @@ public class DataFormatAwareEngineTests extends OpenSearchTestCase {
             engine.refresh("second");
 
             try (GatedCloseable<CatalogSnapshot> ref = engine.acquireSnapshot()) {
-                assertThat(ref.get().getGeneration(), equalTo(2L));
+                assertThat(ref.get().getGeneration(), equalTo(3L));
                 // 2 segments: one from first refresh, one from second
                 assertThat(ref.get().getSegments().size(), equalTo(2));
             }
@@ -431,7 +431,7 @@ public class DataFormatAwareEngineTests extends OpenSearchTestCase {
             try (GatedCloseable<CatalogSnapshot> ref = engine.acquireSnapshot()) {
                 CatalogSnapshot snapshot = ref.get();
                 assertThat(snapshot.getSegments().size(), equalTo(numBatches));
-                assertThat(snapshot.getGeneration(), equalTo((long) numBatches));
+                assertThat(snapshot.getGeneration(), equalTo((long) (numBatches + 1)));
 
                 // Each segment should have exactly 1 file with 1 row (1 doc per batch)
                 for (org.opensearch.index.engine.exec.Segment segment : snapshot.getSegments()) {
@@ -463,7 +463,7 @@ public class DataFormatAwareEngineTests extends OpenSearchTestCase {
                 assertThat(snapshot, notNullValue());
                 // Flush calls refresh internally, producing 1 segment
                 assertThat(snapshot.getSegments().size(), equalTo(1));
-                assertThat(snapshot.getGeneration(), equalTo(1L));
+                assertThat(snapshot.getGeneration(), equalTo(2L));
             }
             assertThat(engine.getProcessedLocalCheckpoint(), equalTo((long) numDocs - 1));
             assertThat(engine.lastRefreshedCheckpoint(), equalTo((long) numDocs - 1));
@@ -560,7 +560,7 @@ public class DataFormatAwareEngineTests extends OpenSearchTestCase {
             assertThat(engine.lastRefreshedCheckpoint(), equalTo((long) totalDocs - 1));
 
             try (GatedCloseable<CatalogSnapshot> ref = engine.acquireSnapshot()) {
-                assertThat(ref.get().getGeneration(), equalTo(1L));
+                assertThat(ref.get().getGeneration(), equalTo(2L));
                 assertThat(ref.get().getSegments().size(), greaterThan(0));
             }
         }
@@ -657,9 +657,9 @@ public class DataFormatAwareEngineTests extends OpenSearchTestCase {
             try (GatedCloseable<CatalogSnapshot> ref = engine.acquireSnapshot()) {
                 CatalogSnapshot snapshot = ref.get();
                 assertThat(snapshot, notNullValue());
-                assertThat(snapshot.getGeneration(), equalTo(0L));
+                assertThat(snapshot.getGeneration(), equalTo(1L));
                 assertThat(snapshot.getSegments().size(), equalTo(0));
-                assertThat(snapshot.getId(), equalTo(0L));
+                assertThat(snapshot.getId(), equalTo(1L));
             }
         }
     }
@@ -740,7 +740,7 @@ public class DataFormatAwareEngineTests extends OpenSearchTestCase {
             assertThat(engine.lastRefreshedCheckpoint(), equalTo((long) numDocs - 1));
             try (GatedCloseable<CatalogSnapshot> ref = engine.acquireSnapshot()) {
                 CatalogSnapshot snapshot = ref.get();
-                assertThat(snapshot.getGeneration(), equalTo(1L));
+                assertThat(snapshot.getGeneration(), equalTo(2L));
                 assertThat(snapshot.getSegments().size(), equalTo(1));
                 assertThat(snapshot.getSegments().get(0).dfGroupedSearchableFiles().containsKey(mockDataFormat.name()), equalTo(true));
             }
@@ -909,7 +909,7 @@ public class DataFormatAwareEngineTests extends OpenSearchTestCase {
                 IndexReaderProvider.Reader reader = readerRef.get();
                 assertThat(reader, notNullValue());
                 assertThat(reader.catalogSnapshot(), notNullValue());
-                assertThat(reader.catalogSnapshot().getGeneration(), equalTo(1L));
+                assertThat(reader.catalogSnapshot().getGeneration(), equalTo(2L));
                 assertThat(reader.catalogSnapshot().getSegments().size(), equalTo(1));
             }
         }
@@ -1019,7 +1019,7 @@ public class DataFormatAwareEngineTests extends OpenSearchTestCase {
                 IndexReaderProvider.Reader reader = readerRef.get();
                 CatalogSnapshot snapshot = reader.catalogSnapshot();
                 assertThat(snapshot.getSegments().size(), equalTo(numBatches));
-                assertThat(snapshot.getGeneration(), equalTo((long) numBatches));
+                assertThat(snapshot.getGeneration(), equalTo((long) (numBatches + 1)));
                 // Format-specific reader should be present
                 assertThat(reader.reader(mockDataFormat), notNullValue());
             }
@@ -1534,11 +1534,12 @@ public class DataFormatAwareEngineTests extends OpenSearchTestCase {
             assertThat("each refresh with data must notify", observedGenerations.size(), equalTo(numRefreshes));
 
             // Verify the catalog snapshot generation advanced monotonically
+            // +1 because bumpGenerationForNewEngineLifecycle() advances generation at engine open
             try (GatedCloseable<CatalogSnapshot> ref = engine.acquireSnapshot()) {
                 assertThat(
-                    "final snapshot generation must equal number of refreshes",
+                    "final snapshot generation must equal number of refreshes + 1 (engine open bump)",
                     ref.get().getGeneration(),
-                    equalTo((long) numRefreshes)
+                    equalTo((long) numRefreshes + 1)
                 );
             }
         }
@@ -1641,9 +1642,10 @@ public class DataFormatAwareEngineTests extends OpenSearchTestCase {
             engine.refresh("test");
 
             // beforeRefresh sees the OLD generation (snapshot not yet committed)
-            assertThat("beforeRefresh must see pre-commit generation", genSeenInBefore.get(), equalTo(0L));
+            // +1 offset because bumpGenerationForNewEngineLifecycle() advances generation at engine open
+            assertThat("beforeRefresh must see pre-commit generation", genSeenInBefore.get(), equalTo(1L));
             // afterRefresh sees the NEW generation (snapshot committed)
-            assertThat("afterRefresh must see post-commit generation", genSeenInAfter.get(), equalTo(1L));
+            assertThat("afterRefresh must see post-commit generation", genSeenInAfter.get(), equalTo(2L));
         }
     }
 

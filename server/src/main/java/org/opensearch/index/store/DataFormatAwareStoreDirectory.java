@@ -292,6 +292,40 @@ public class DataFormatAwareStoreDirectory extends FilterDirectory implements Re
         return checksumStrategies.get(format);
     }
 
+    /**
+     * Retains only checksums for files present in the current catalog snapshot, evicting all stale entries.
+     * Called after successful upload to keep the cache bounded to the active file set.
+     *
+     * @param currentSnapshotFiles the files in the current catalog snapshot (format-prefixed)
+     */
+    public void evictStaleChecksums(Collection<String> currentSnapshotFiles) {
+        for (Map.Entry<String, FormatChecksumStrategy> entry : checksumStrategies.entrySet()) {
+            if (isDefaultFormat(entry.getKey())) {
+                continue;
+            }
+            if (entry.getValue() instanceof PrecomputedChecksumStrategy precomputed) {
+                String prefix = entry.getKey() + "/";
+                Set<String> activeForFormat = currentSnapshotFiles.stream().filter(f -> f.startsWith(prefix)).collect(Collectors.toSet());
+                precomputed.retainOnly(activeForFormat);
+            }
+        }
+    }
+
+    /**
+     * Creates a {@link VerifyingIndexOutput} appropriate for the given file's format.
+     * Delegates to the format's {@link FormatChecksumStrategy#createVerifyingOutput} so that
+     * each format can use its own checksum algorithm (e.g., CRC32C for Parquet, codec footer for Lucene).
+     *
+     * @param metadata the expected file metadata (length, checksum)
+     * @param output the underlying index output to wrap
+     * @return a format-appropriate verifying output
+     */
+    public VerifyingIndexOutput createVerifyingOutput(StoreFileMetadata metadata, IndexOutput output) {
+        String format = FileMetadata.parseDataFormat(metadata.name());
+        FormatChecksumStrategy strategy = checksumStrategies.getOrDefault(format, DEFAULT_CHECKSUM_STRATEGY);
+        return strategy.createVerifyingOutput(metadata, output);
+    }
+
     public IndexOutput createOutput(FileMetadata fm, IOContext context) throws IOException {
         return createOutput(toFileIdentifier(fm), context);
     }
@@ -308,7 +342,13 @@ public class DataFormatAwareStoreDirectory extends FilterDirectory implements Re
     // Private Helpers
     // ═══════════════════════════════════════════════════════════════
 
-    private static boolean isDefaultFormat(String format) {
+    /**
+     * Returns true if files of this format live directly under the shard's {@code index/}
+     * directory rather than under a format-named subdirectory. {@code "lucene"} and
+     * {@code "metadata"} files (plus {@code null}/empty as defensive defaults) are laid out
+     * flat; every other format (e.g. {@code "parquet"}) gets its own subdirectory.
+     */
+    public static boolean isDefaultFormat(String format) {
         return format == null || format.isEmpty() || INDEX_DIRECTORY_FORMATS.contains(format.toLowerCase(Locale.ROOT));
     }
 }

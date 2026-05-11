@@ -97,11 +97,12 @@ public class SegmentReplicationTarget extends AbstractSegmentReplicationTarget {
             store = store();
             store.incRef();
             multiFileWriter.renameAllTempFiles();
+            // Unified path: bytes are always Lucene SegmentInfos. DFA snapshots travel in userData.
             final SegmentInfos infos = store.buildSegmentInfos(
                 checkpointInfoResponse.getInfosBytes(),
                 checkpointInfoResponse.getCheckpoint().getSegmentsGen()
             );
-            indexShard.finalizeReplication(infos);
+            indexShard.finalizeReplication(Store.fromSegmentInfos(infos, store.shardFormatDirectoryResolver()));
         } catch (CorruptIndexException | IndexFormatTooNewException | IndexFormatTooOldException ex) {
             // this is a fatal exception at this stage.
             // this means we transferred files from the remote that have not be checksummed and they are

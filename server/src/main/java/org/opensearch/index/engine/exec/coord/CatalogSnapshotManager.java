@@ -121,14 +121,24 @@ public class CatalogSnapshotManager implements Closeable {
     }
 
     /**
+     * Advances the catalog generation once at engine-open time so this engine's first commit
+     * lands strictly after any prior primary's last commit for the same shard.
+     * Prevents {@code RemoteStoreUtils#verifyNoMultipleWriters} collisions on primary relocation.
+     */
+    public synchronized void bumpGenerationForNewEngineLifecycle() throws IOException {
+        commitNewSnapshot(latestCatalogSnapshot.getSegments());
+    }
+
+    /**
      * Applies the results of a completed merge to the latest catalog snapshot.
      * Replaces the merged segments with the new merged segment and commits a new snapshot.
      *
      * @param mergeResult the result of the merge containing the merged writer file set
      * @param oneMerge    the merge specification identifying which segments were merged
+     * @return the newly created merged {@link Segment}
      * @throws IOException if committing the new snapshot fails
      */
-    public synchronized void applyMergeResults(MergeResult mergeResult, OneMerge oneMerge) throws IOException {
+    public synchronized Segment applyMergeResults(MergeResult mergeResult, OneMerge oneMerge) throws IOException {
 
         List<Segment> segmentList = new ArrayList<>(latestCatalogSnapshot.getSegments());
 
@@ -180,6 +190,7 @@ public class CatalogSnapshotManager implements Closeable {
 
         // Commit new catalog snapshot
         commitNewSnapshot(segmentList);
+        return segmentToAdd;
     }
 
     // ---- Refresh path ----
@@ -210,10 +221,12 @@ public class CatalogSnapshotManager implements Closeable {
             newSnapshot = new DataformatAwareCatalogSnapshot(
                 latestCatalogSnapshot.getId() + 1,
                 latestCatalogSnapshot.getGeneration() + 1,
-                latestCatalogSnapshot.getVersion(),
+                latestCatalogSnapshot.getVersion() + 1,
                 refreshedSegments,
                 latestCatalogSnapshot.getLastWriterGeneration() + 1,
-                latestCatalogSnapshot.getUserData()
+                latestCatalogSnapshot.getUserData(),
+                latestCatalogSnapshot.getLastCommitFileName(),
+                latestCatalogSnapshot.getLastCommitGeneration()
             );
         } catch (Exception e) {
             // Construction failed (e.g., OOM) — notify listeners that the refresh did not produce a new snapshot
@@ -314,6 +327,26 @@ public class CatalogSnapshotManager implements Closeable {
         // Release the manager's own reference to the old snapshot.
         // The snapshot won't be deleted if the commit path still holds a reference.
         decRefAndMaybeDelete(oldSnapshot);
+    }
+
+    /**
+     * Replaces the current snapshot with one received from the primary via segment replication.
+     * The incoming snapshot is registered with the file deleter (ref counts for its files), then
+     * the manager's prior reference is released. Replica-only: does not go through a commit.
+     */
+    public synchronized void applyReplicationSnapshot(CatalogSnapshot incoming) {
+        if (closed.get()) {
+            throw new IllegalStateException("CatalogSnapshotManager is closed");
+        }
+        try {
+            indexFileDeleter.addFileReferences(incoming);
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to add file references for replicated snapshot [gen=" + incoming.getGeneration() + "]", e);
+        }
+        catalogSnapshotMap.put(incoming.getGeneration(), incoming);
+        CatalogSnapshot previous = latestCatalogSnapshot;
+        latestCatalogSnapshot = incoming;
+        decRefAndMaybeDelete(previous);
     }
 
     // ---- Acquire path ----

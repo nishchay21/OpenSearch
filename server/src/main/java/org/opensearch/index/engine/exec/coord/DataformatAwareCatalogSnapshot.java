@@ -8,6 +8,8 @@
 
 package org.opensearch.index.engine.exec.coord;
 
+import org.apache.lucene.index.SegmentInfos;
+import org.apache.lucene.util.Version;
 import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.common.io.stream.BytesStreamOutput;
 import org.opensearch.core.common.bytes.BytesReference;
@@ -42,8 +44,11 @@ public class DataformatAwareCatalogSnapshot extends CatalogSnapshot {
     private final long id;
     private final List<Segment> segments;
     private final long lastWriterGeneration;
+    private final long numDocs;
     private Map<String, String> userData;
     private final AtomicBoolean closed = new AtomicBoolean(false);
+    private String lastCommitFileName;
+    private long lastCommitGeneration = -1;
 
     /**
      * Constructs a new DataformatAwareCatalogSnapshot.
@@ -63,11 +68,42 @@ public class DataformatAwareCatalogSnapshot extends CatalogSnapshot {
         long lastWriterGeneration,
         Map<String, String> userData
     ) {
+        this(id, generation, version, segments, lastWriterGeneration, userData, null, -1);
+    }
+
+    /**
+     * Constructs a new DataformatAwareCatalogSnapshot carrying forward the last committed segments file name.
+     * <p>
+     * This constructor ensures that the {@code segmentsFileName} from a prior flush is preserved
+     * across refreshes and merges, which would otherwise create new snapshots without it.
+     *
+     * @param id the unique snapshot identifier
+     * @param generation the monotonically increasing generation number
+     * @param version the schema version for serialization compatibility
+     * @param segments the list of segments in this snapshot
+     * @param lastWriterGeneration the generation of the last writer that contributed to this snapshot
+     * @param userData user-defined metadata key-value pairs
+     * @param lastCommittedFileName the segments_N file name from the most recent flush, or null
+     * @param lastCommitGeneration the Lucene generation of the most recent commit, or -1
+     */
+    DataformatAwareCatalogSnapshot(
+        long id,
+        long generation,
+        long version,
+        List<Segment> segments,
+        long lastWriterGeneration,
+        Map<String, String> userData,
+        String lastCommittedFileName,
+        long lastCommitGeneration
+    ) {
         super("dataformat_aware_catalog_snapshot", generation, version);
         this.id = id;
         this.segments = Collections.unmodifiableList(new ArrayList<>(segments));
         this.lastWriterGeneration = lastWriterGeneration;
+        this.numDocs = computeNumDocs(this.segments);
         this.userData = Map.copyOf(userData);
+        this.lastCommitFileName = lastCommittedFileName;
+        this.lastCommitGeneration = lastCommitGeneration;
     }
 
     /**
@@ -77,14 +113,11 @@ public class DataformatAwareCatalogSnapshot extends CatalogSnapshot {
      * @param directoryResolver function that maps a data format name to its directory path
      * @throws IOException if an I/O error occurs
      */
-    DataformatAwareCatalogSnapshot(StreamInput in, Function<String, String> directoryResolver) throws IOException {
+    public DataformatAwareCatalogSnapshot(StreamInput in, Function<String, String> directoryResolver) throws IOException {
         super(in);
-
         this.userData = in.readMap(StreamInput::readString, StreamInput::readString);
-
         this.id = in.readLong();
         this.lastWriterGeneration = in.readLong();
-
         int segmentCount = in.readVInt();
         if (segmentCount < 0 || segmentCount > in.available()) {
             throw new IOException("Invalid segment count: " + segmentCount);
@@ -94,6 +127,7 @@ public class DataformatAwareCatalogSnapshot extends CatalogSnapshot {
             segmentList.add(new Segment(in, directoryResolver));
         }
         this.segments = Collections.unmodifiableList(segmentList);
+        this.numDocs = computeNumDocs(this.segments);
     }
 
     @Override
@@ -191,21 +225,98 @@ public class DataformatAwareCatalogSnapshot extends CatalogSnapshot {
 
     @Override
     public DataformatAwareCatalogSnapshot clone() {
-        return new DataformatAwareCatalogSnapshot(id, generation, version, segments, lastWriterGeneration, userData);
+        return new DataformatAwareCatalogSnapshot(
+            id,
+            generation,
+            version,
+            segments,
+            lastWriterGeneration,
+            userData,
+            this.getLastCommitFileName(),
+            this.lastCommitGeneration
+        );
     }
 
     @Override
-    public int getFormatVersionForFile(String file) {
-        // TODO: Return the actual format-specific version the file was written with.
-        // For lucene files, this should come from a per-segment version map populated
-        // by the composite engine (which has access to SegmentInfos). For non-lucene
-        // files, each DataFormat should provide its own version.
-        return org.opensearch.Version.CURRENT.major;
+    public Version getFormatVersionForFile(String file) {
+        // TODO: return the per-file format version once per-segment tracking is available.
+        return Version.LATEST;
     }
 
+    @Override
+    public Version getMinSegmentFormatVersion() {
+        return null;
+    }
+
+    @Override
+    public Version getCommitDataFormatVersion() {
+        // Todo: update this api once proper versioning is implemented.
+        return Version.LATEST;
+    }
+
+    /**
+     * Returns the total document count, precomputed during construction by summing
+     * {@code numRows} from each segment's first available format.
+     */
+    @Override
+    public long getNumDocs() {
+        return numDocs;
+    }
+
+    private static long computeNumDocs(List<Segment> segments) {
+        return segments.stream()
+            .flatMap(segment -> segment.dfGroupedSearchableFiles().values().stream())
+            .mapToLong(WriterFileSet::numRows)
+            .sum();
+    }
+
+    /**
+     * Returns the {@code segments_N} filename associated with this snapshot's Lucene commit,
+     * or {@code null} if this snapshot has not yet been committed (e.g., refresh-only snapshots).
+     */
+    @Override
+    public synchronized String getLastCommitFileName() {
+        return lastCommitFileName;
+    }
+
+    @Override
+    public long getLastCommitGeneration() {
+        if (lastCommitGeneration >= 0) {
+            return lastCommitGeneration;
+        }
+        return getGeneration();
+    }
+
+    /**
+     * Sets the commit file name and Lucene generation produced by the commit that persisted this snapshot.
+     * Called by the engine after {@code Committer.commit()} or by the replica after
+     * {@code store.commitSegmentInfos()}.
+     *
+     * @param commitFileName the segments_N filename (e.g., "segments_2")
+     * @param commitGeneration the Lucene generation of the commit
+     */
+    public synchronized void setLastCommitInfo(String commitFileName, long commitGeneration) {
+        this.lastCommitFileName = commitFileName;
+        this.lastCommitGeneration = commitGeneration;
+    }
+
+    /**
+     * Builds a synthetic (zero-segment) Lucene {@code SegmentInfos} whose {@code userData} carries
+     * this snapshot's userData plus the serialized catalog snapshot, then serializes it to bytes.
+     * Invoked by {@code RemoteSegmentStoreDirectory.uploadMetadata} at upload time — no engine
+     * state is touched here; the upload listener has already refreshed checkpoints on this snapshot
+     * before calling.
+     */
     @Override
     public byte[] serialize() throws IOException {
-        throw new UnsupportedOperationException("DataformatAwareCatalogSnapshot does not support serialize()");
+        return SyntheticSegmentInfos.serialize(this);
+    }
+
+    @Override
+    public SegmentInfos getSegmentInfos() {
+        throw new UnsupportedOperationException(
+            "DataformatAwareCatalogSnapshot does not wrap SegmentInfos. Use CatalogSnapshot API instead."
+        );
     }
 
     @Override
@@ -230,6 +341,12 @@ public class DataformatAwareCatalogSnapshot extends CatalogSnapshot {
                 for (String file : entry.getValue().files()) {
                     fileNames.add(FileMetadata.serialize(formatName, file));
                 }
+            }
+        }
+        if (includeSegmentsFile) {
+            String segFile = getLastCommitFileName();
+            if (segFile != null) {
+                fileNames.add(segFile);
             }
         }
         return fileNames;
