@@ -53,7 +53,9 @@ impl TieredStorageRegistry {
     /// If `prefix` is empty or `"/"`, returns all entries.
     #[must_use]
     pub fn entries_matching(&self, prefix: &str) -> Vec<(String, FileLocation, u64)> {
-        let match_all = prefix.is_empty() || prefix == "/";
+        // Strip leading "/" — keys are stored without leading slash
+        let prefix = prefix.strip_prefix('/').unwrap_or(prefix);
+        let match_all = prefix.is_empty();
         self.files
             .iter()
             .filter(|e| match_all || e.key().starts_with(prefix))
@@ -86,6 +88,8 @@ impl fmt::Display for TieredStorageRegistry {
 
 impl FileRegistry for TieredStorageRegistry {
     fn register(&self, key: &str, value: TieredFileEntry) {
+        // Strip leading "/" — keys are stored without leading slash
+        let key = key.strip_prefix('/').unwrap_or(key);
         self.files.insert(key.to_string(), value);
         native_bridge_common::log_info!(
             "TieredStorageRegistry: register key='{}', total_files={}",
@@ -94,17 +98,24 @@ impl FileRegistry for TieredStorageRegistry {
     }
 
     fn get(&self, key: &str) -> Option<ReadGuard<'_>> {
+        // Strip leading "/" — keys are stored without leading slash
+        let key = key.strip_prefix('/').unwrap_or(key);
         let entry = self.files.get(key)?;
         Some(ReadGuard::new(entry))
     }
 
     fn update(&self, key: &str, f: impl FnOnce(&mut TieredFileEntry)) {
+        // Strip leading "/" — keys are stored without leading slash
+        let key = key.strip_prefix('/').unwrap_or(key);
         if let Some(mut entry) = self.files.get_mut(key) {
             f(entry.value_mut());
         }
     }
 
     fn remove(&self, key: &str, force: bool) -> bool {
+        // Strip leading "/" — keys are stored without leading slash
+        let key = key.strip_prefix('/').unwrap_or(key);
+
         // Log all entries before remove
         let entries_before: Vec<String> = self.files.iter()
             .map(|entry| format!("  '{}' ref_count={}", entry.key(), entry.value().ref_count()))
@@ -143,6 +154,8 @@ impl FileRegistry for TieredStorageRegistry {
     }
 
     fn remove_by_prefix(&self, prefix: &str, force: bool) -> usize {
+        // Strip leading "/" — keys are stored without leading slash
+        let prefix = prefix.strip_prefix('/').unwrap_or(prefix);
         if force {
             let mut removed = 0usize;
             self.files.retain(|key, _| {
@@ -173,8 +186,11 @@ impl FileRegistry for TieredStorageRegistry {
 
     fn purge_stale(&self, valid_keys: &HashSet<String>) -> usize {
         let before = self.files.len();
-        self.files
-            .retain(|key, _| valid_keys.contains(key.as_str()));
+        self.files.retain(|key, _| {
+            // Check both with and without leading "/" since callers may pass either form
+            valid_keys.contains(key.as_str())
+                || valid_keys.contains(&format!("/{}", key))
+        });
         let removed = before.saturating_sub(self.files.len());
         if removed > 0 {
             native_bridge_common::log_info!(

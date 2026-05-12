@@ -22,6 +22,8 @@ import org.opensearch.index.store.RemoteSegmentStoreDirectory;
 import org.opensearch.index.store.RemoteSyncListener;
 import org.opensearch.index.store.SubdirectoryAwareDirectory;
 import org.opensearch.index.store.remote.filecache.FileCache;
+import org.opensearch.storage.indexinput.FormatSwitchableIndexInput;
+import org.opensearch.storage.indexinput.FormatSwitchableIndexInputWrapper;
 import org.opensearch.storage.prefetch.TieredStoragePrefetchSettings;
 import org.opensearch.threadpool.ThreadPool;
 
@@ -31,6 +33,8 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.function.Supplier;
 
 /**
@@ -61,6 +65,8 @@ public class TieredSubdirectoryAwareDirectory extends FilterDirectory implements
     private final StoreStrategyRegistry strategies;
     private final RemoteSegmentStoreDirectory remoteDirectory;
     private final ShardPath shardPath;
+    /** Per-file original FormatSwitchableIndexInput — used by afterSyncToRemote to switch before local delete. */
+    private final ConcurrentMap<String, FormatSwitchableIndexInput> formatInputs = new ConcurrentHashMap<>();
 
     public TieredSubdirectoryAwareDirectory(
         SubdirectoryAwareDirectory localDirectory,
@@ -95,13 +101,24 @@ public class TieredSubdirectoryAwareDirectory extends FilterDirectory implements
 
     @Override
     public IndexInput openInput(String name, IOContext context) throws IOException {
+        ensureOpen();
         if (isFormatFile(name)) {
+            // File already synced to remote — read directly from remote.
             if (remoteDirectory.getExistingRemoteFilename(name) != null) {
-                logger.info("[TieredSubdirAwareDir] openInput REMOTE format file={}", name);
                 return remoteDirectory.openInput(name, context);
             }
-            logger.info("[TieredSubdirAwareDir] openInput LOCAL format file={}", name);
-            return in.openInput(name, context);
+            // File not yet synced — wrap in FormatSwitchableIndexInput so that if
+            // afterSyncToRemote deletes the local copy mid-read, the reader switches
+            // to remote transparently (same pattern as SwitchableIndexInput for Lucene files).
+            IndexInput localInput = in.openInput(name, context);
+            FormatSwitchableIndexInput switchable = new FormatSwitchableIndexInput(
+                "FormatSwitchable(" + name + ")",
+                name,
+                localInput,
+                remoteDirectory
+            );
+            formatInputs.put(name, switchable);
+            return new FormatSwitchableIndexInputWrapper("FormatSwitchable(" + name + ")", switchable);
         }
         return tieredDirectory.openInput(name, context);
     }
@@ -109,11 +126,10 @@ public class TieredSubdirectoryAwareDirectory extends FilterDirectory implements
     @Override
     public long fileLength(String name) throws IOException {
         if (isFormatFile(name)) {
+            // Same routing as openInput — check remote first.
             if (remoteDirectory.getExistingRemoteFilename(name) != null) {
-                logger.info("[TieredSubdirAwareDir] fileLength REMOTE format file={}", name);
                 return remoteDirectory.fileLength(name);
             }
-            logger.info("[TieredSubdirAwareDir] fileLength LOCAL format file={}", name);
             return in.fileLength(name);
         }
         return tieredDirectory.fileLength(name);
@@ -122,10 +138,7 @@ public class TieredSubdirectoryAwareDirectory extends FilterDirectory implements
     @Override
     public String[] listAll() throws IOException {
         Set<String> all = new HashSet<>(Arrays.asList(tieredDirectory.listAll()));
-        String[] result = all.stream().sorted().toArray(String[]::new);
-        logger.info("[TieredSubdirAwareDir] listAll count={}, files={}, remoteMetadataKeys={}",
-            result.length, Arrays.toString(result), remoteDirectory.getSegmentsUploadedToRemoteStore().keySet());
-        return result;
+        return all.stream().sorted().toArray(String[]::new);
     }
 
     @Override
@@ -136,19 +149,14 @@ public class TieredSubdirectoryAwareDirectory extends FilterDirectory implements
     @Override
     public void deleteFile(String name) throws IOException {
         if (isFormatFile(name)) {
-            // Log remote metadata state to verify behavior
-            String remoteName = remoteDirectory.getExistingRemoteFilename(name);
-            logger.info("[TieredSubdirAwareDir] deleteFile FORMAT file={}, remoteFilename={}, remoteMetadataKeys={}",
-                name, remoteName, remoteDirectory.getSegmentsUploadedToRemoteStore().keySet());
-            // On warm, format files are remote-only. Recovery cleanup calls deleteFile
-            // because listAll() exposes them but they're not in Lucene's segments_N.
-            // Don't remove from registry — the file still exists on remote and is needed
-            // for DataFusion queries. Just delete local copy if any.
-            logger.info("[TieredSubdirAwareDir] deleteFile FORMAT file={}, skipping registry removal (warm remote-only)", name);
+            String blobKey = remoteDirectory.getExistingRemoteFilename(name);
+            if (blobKey == null) {
+                strategies.onRemoved(name);
+            }
             try {
                 in.deleteFile(name);
             } catch (NoSuchFileException e) {
-                // Expected — file was never local or already evicted
+                // Expected on read-only warm — file was never local or already evicted
             }
             return;
         }
@@ -159,7 +167,6 @@ public class TieredSubdirectoryAwareDirectory extends FilterDirectory implements
     public void afterSyncToRemote(String file) {
         if (isFormatFile(file)) {
             String blobKey = remoteDirectory.getExistingRemoteFilename(file);
-            logger.info("[TieredSubdirAwareDir] afterSyncToRemote FORMAT file={}, blobKey={}", file, blobKey);
             if (blobKey == null) {
                 throw new IllegalStateException(
                     "afterSyncToRemote called for format file [" + file + "] but no remote filename found in metadata"
@@ -174,9 +181,19 @@ public class TieredSubdirectoryAwareDirectory extends FilterDirectory implements
             StoreStrategyRegistry.Match match = strategies.matchFor(file);
             String format = match != null ? match.format().name() : "";
             strategies.onUploaded(file, remoteDirectory.getRemoteBasePath(format), blobKey, size);
-            // On warm, no local parquet files should remain — delete after sync.
-            // Safe because: (1) the file is now REMOTE in the registry, so new readers
-            // route to remote, and (2) TieredObjectStore retries from remote if local NotFound.
+
+            // Switch any in-flight reader to remote before deleting local.
+            // The switchToRemote cascades to all clones/slices via the shared lock.
+            FormatSwitchableIndexInput switchable = formatInputs.remove(file);
+            if (switchable != null) {
+                try {
+                    switchable.switchToRemote();
+                } catch (IOException e) {
+                    logger.warn("afterSyncToRemote: failed to switch to remote for file={}", file, e);
+                }
+            }
+
+            // Now safe to delete local — all readers are on remote.
             try {
                 in.deleteFile(file);
             } catch (java.nio.file.NoSuchFileException e) {

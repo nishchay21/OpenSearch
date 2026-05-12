@@ -1143,10 +1143,12 @@ public final class RemoteSegmentStoreDirectory extends FilterDirectory implement
     }
 
     /**
-     * Returns the base blob path for this shard's remote segment data.
-     * E.g., "clusterUUID/indexUUID/shardId/segments/data/"
+     * Returns the blob path for the given data format.
+     * If a {@link FormatBlobRouter} is configured, uses format-specific routing
+     * (e.g., "basePath/parquet/" for parquet files). Otherwise falls back to the base path.
      *
-     * @return the base path as a string
+     * @param format the data format name (e.g., "parquet", "lucene")
+     * @return the blob path as a string for the given format
      */
     public String getRemoteBasePath(String format) {
         if (formatBlobRouter != null && format != null && format.isEmpty() == false) {

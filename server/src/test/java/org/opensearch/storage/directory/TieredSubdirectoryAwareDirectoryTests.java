@@ -819,4 +819,125 @@ public class TieredSubdirectoryAwareDirectoryTests extends TieredStorageBaseTest
             w.directory.close();
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    // FormatSwitchableIndexInput integration tests
+    // ═══════════════════════════════════════════════════════════════
+
+    public void testOpenInputLocalFormatFileReturnsFormatSwitchable() throws IOException {
+        WithRegistry w = buildDirectoryWithParquetFormat();
+        try {
+            String parquetFile = "parquet/seg_switchable.parquet";
+            writeParquetFileToDisk(parquetFile);
+            // File NOT in remote metadata → openInput takes local path → wraps in FormatSwitchableIndexInput
+            IndexInput input = w.directory.openInput(parquetFile, IOContext.DEFAULT);
+            assertTrue(
+                "Local format file should be wrapped in FormatSwitchableIndexInput",
+                input instanceof org.opensearch.storage.indexinput.FormatSwitchableIndexInputWrapper
+            );
+            input.close();
+        } finally {
+            w.directory.close();
+        }
+    }
+
+    public void testOpenInputRemoteFormatFileDoesNotWrapInSwitchable() throws IOException {
+        directory = buildDirectoryWithParquetFormat().directory;
+        populateData();
+        try {
+            String parquetFile = "parquet/seg_remote_nowrap.parquet";
+            addParquetMetadataEntry(parquetFile, "seg_remote_nowrap.parquet__UUID1");
+            // File IS in remote metadata → openInput routes directly to remote, no switchable wrapper
+            IndexInput input = directory.openInput(parquetFile, IOContext.DEFAULT);
+            assertFalse(
+                "Remote format file should NOT be wrapped in FormatSwitchableIndexInput",
+                input instanceof org.opensearch.storage.indexinput.FormatSwitchableIndexInputWrapper
+            );
+            input.close();
+        } finally {
+            directory.close();
+        }
+    }
+
+    public void testAfterSyncToRemoteSwitchesInFlightReader() throws IOException {
+        WithRegistry w = buildDirectoryWithParquetFormat();
+        populateData();
+        try {
+            String parquetFile = "parquet/seg_inflight.parquet";
+            writeParquetFileToDisk(parquetFile);
+
+            // Open input while file is local (not yet synced)
+            IndexInput input = w.directory.openInput(parquetFile, IOContext.DEFAULT);
+            assertTrue(input instanceof org.opensearch.storage.indexinput.FormatSwitchableIndexInputWrapper);
+            org.opensearch.storage.indexinput.FormatSwitchableIndexInput switchable =
+                ((org.opensearch.storage.indexinput.FormatSwitchableIndexInputWrapper) input).unwrap();
+            assertFalse("Should start on local", switchable.hasSwitchedToRemote());
+
+            // Read some bytes from local
+            byte[] buf = new byte[PARQUET_DATA.length];
+            switchable.readBytes(buf, 0, buf.length);
+            assertArrayEquals("Should read local data before sync", PARQUET_DATA, buf);
+
+            // Now simulate sync: add remote metadata and call afterSyncToRemote
+            addParquetMetadataEntry(parquetFile, "seg_inflight.parquet__UUID1");
+            w.directory.afterSyncToRemote(parquetFile);
+
+            // The switchable should now be on remote
+            assertTrue("Should be switched to remote after afterSyncToRemote", switchable.hasSwitchedToRemote());
+
+            // Local file should be deleted
+            assertFalse("Local file should be deleted", java.nio.file.Files.exists(shardPath.getDataPath().resolve(parquetFile)));
+
+            input.close();
+        } finally {
+            w.directory.close();
+        }
+    }
+
+    public void testAfterSyncToRemoteSwitchesClonesOfInFlightReader() throws IOException {
+        WithRegistry w = buildDirectoryWithParquetFormat();
+        populateData();
+        try {
+            String parquetFile = "parquet/seg_clone_switch.parquet";
+            writeParquetFileToDisk(parquetFile);
+
+            // Open input and clone it
+            IndexInput input = w.directory.openInput(parquetFile, IOContext.DEFAULT);
+            assertTrue(input instanceof org.opensearch.storage.indexinput.FormatSwitchableIndexInputWrapper);
+            org.opensearch.storage.indexinput.FormatSwitchableIndexInput switchable =
+                ((org.opensearch.storage.indexinput.FormatSwitchableIndexInputWrapper) input).unwrap();
+            assertFalse(switchable.hasSwitchedToRemote());
+
+            // Sync — the switch cascades to clones internally (tested in FormatSwitchableIndexInputTests)
+            addParquetMetadataEntry(parquetFile, "seg_clone_switch.parquet__UUID1");
+            w.directory.afterSyncToRemote(parquetFile);
+
+            assertTrue("Original should be switched", switchable.hasSwitchedToRemote());
+
+            input.close();
+        } finally {
+            w.directory.close();
+        }
+    }
+
+    public void testAfterSyncToRemoteWithNoOpenInputStillDeletesLocal() throws IOException {
+        WithRegistry w = buildDirectoryWithParquetFormat();
+        try {
+            String parquetFile = "parquet/seg_no_reader.parquet";
+            writeParquetFileToDisk(parquetFile);
+            assertTrue(java.nio.file.Files.exists(shardPath.getDataPath().resolve(parquetFile)));
+
+            // No openInput call — no FormatSwitchableIndexInput tracked
+            addParquetMetadataEntry(parquetFile, "seg_no_reader.parquet__UUID1");
+            w.directory.afterSyncToRemote(parquetFile);
+
+            // Local file should still be deleted
+            assertFalse(
+                "Local file should be deleted even without open readers",
+                java.nio.file.Files.exists(shardPath.getDataPath().resolve(parquetFile))
+            );
+        } finally {
+            w.directory.close();
+        }
+    }
 }

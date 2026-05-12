@@ -363,7 +363,8 @@ public class LuceneReaderManagerTests extends OpenSearchTestCase {
                 Optional.of(engine),
                 dataFormat,
                 mock(DataFormatRegistry.class),
-                shardPath
+                shardPath,
+                Map.of()
             );
 
             EngineReaderManager<?> rm = LuceneSearchBackEnd.createReaderManager(settings);
@@ -375,7 +376,13 @@ public class LuceneReaderManagerTests extends OpenSearchTestCase {
     }
 
     public void testCreateReaderManagerWithEmptyProviderThrows() {
-        ReaderManagerConfig settings = new ReaderManagerConfig(Optional.empty(), dataFormat, mock(DataFormatRegistry.class), null);
+        ReaderManagerConfig settings = new ReaderManagerConfig(
+            Optional.empty(),
+            dataFormat,
+            mock(DataFormatRegistry.class),
+            null,
+            Map.of()
+        );
 
         IllegalStateException ex = expectThrows(IllegalStateException.class, () -> LuceneSearchBackEnd.createReaderManager(settings));
         assertTrue(ex.getMessage().contains("IndexStoreProvider is required"));
