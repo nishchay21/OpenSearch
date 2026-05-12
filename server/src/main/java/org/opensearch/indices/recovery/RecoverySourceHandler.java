@@ -447,6 +447,7 @@ public abstract class RecoverySourceHandler {
         ActionListener<SendFileResult> listener,
         boolean skipCreateRetentionLeaseStep
     ) {
+        logger.info("[WARM-RECOVERY] phase1: startingSeqNo={}, snapshotGen={}", startingSeqNo, snapshot.getGeneration());
         cancellableThreads.checkForCancel();
         final Store store = shard.store();
         try {

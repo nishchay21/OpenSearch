@@ -903,8 +903,9 @@ public class Store extends AbstractIndexShardComponent implements Closeable, Ref
      * @throws IllegalStateException if the latest snapshot in this store differs from the given one after the cleanup.
      */
     public void cleanupAndVerify(String reason, MetadataSnapshot sourceMetadata) throws IOException {
-        logger.info("[Store] cleanupAndVerify called, reason={}, sourceMetadataFiles={}, commitUserData={}",
-            reason, sourceMetadata.asMap().keySet(), sourceMetadata.getCommitUserData());
+        logger.info("[Store] cleanupAndVerify called, reason={}, sourceMetadataFiles={}, commitUserData={}\n  stacktrace: {}",
+            reason, sourceMetadata.asMap().keySet(), sourceMetadata.getCommitUserData(),
+            org.opensearch.ExceptionsHelper.stackTrace(new Exception("cleanupAndVerify caller")));
         metadataLock.writeLock().lock();
         try (Lock writeLock = directory.obtainLock(IndexWriter.WRITE_LOCK_NAME)) {
             for (String existingFile : directory.listAll()) {

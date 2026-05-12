@@ -32,7 +32,7 @@ import org.opensearch.gradle.VersionProperties
 
 apply plugin: 'opensearch.testclusters'
 
-def numNodes = findProperty('numNodes') as Integer ?: 2
+def numNodes = findProperty('numNodes') as Integer ?: 3
 def numZones = findProperty('numZones') as Integer ?: 1
 
 testClusters {
@@ -146,6 +146,8 @@ testClusters {
       if (node.name.endsWith("-0")) {
         node.setting 'node.roles', '["cluster_manager", "data"]'
       } else if (node.name.endsWith("-1")) {
+        node.setting 'node.roles', '["cluster_manager", "warm"]'
+      }else if (node.name.endsWith("-2")) {
         node.setting 'node.roles', '["cluster_manager", "warm"]'
       }
     }

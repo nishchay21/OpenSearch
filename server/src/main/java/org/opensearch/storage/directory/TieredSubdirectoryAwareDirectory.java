@@ -10,6 +10,7 @@ package org.opensearch.storage.directory;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.lucene.index.IndexFileNames;
 import org.apache.lucene.store.FilterDirectory;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
@@ -122,6 +123,17 @@ public class TieredSubdirectoryAwareDirectory extends FilterDirectory implements
             formatInputs.put(name, switchable);
             return new FormatSwitchableIndexInputWrapper("FormatSwitchable(" + name + ")", switchable);
         }
+        // Lucene files: if it's a segments_N file not in remote metadata, try local disk first.
+        // Handles restart where segments_N was written locally but has a different generation than remote.
+        if (name.startsWith(IndexFileNames.SEGMENTS) && remoteDirectory.getExistingRemoteFilename(name) == null) {
+            try {
+                logger.info("openInput: segments file [{}] not in remote, trying local disk", name);
+                return in.openInput(name, context);
+            } catch (NoSuchFileException e) {
+                // Not on local disk either — fall through to TieredDirectory
+                logger.info("openInput: segments file [{}] not on local disk, falling through to TieredDirectory", name);
+            }
+        }
         return tieredDirectory.openInput(name, context);
     }
 
@@ -151,6 +163,12 @@ public class TieredSubdirectoryAwareDirectory extends FilterDirectory implements
 
     @Override
     public IndexOutput createOutput(String name, IOContext context) throws IOException {
+        // Format files (parquet/) need SubdirectoryAwareDirectory which creates parent dirs.
+        // TieredDirectory's CompositeDirectory doesn't handle subdirectories.
+        if (shardPath.resolveIndex().resolve(name).getParent().equals(shardPath.resolveIndex()) == false) {
+            logger.info("createOutput: subdirectory file [{}] routed to SubdirectoryAwareDirectory", name);
+            return in.createOutput(name, context);
+        }
         return tieredDirectory.createOutput(name, context);
     }
 
@@ -227,10 +245,12 @@ public class TieredSubdirectoryAwareDirectory extends FilterDirectory implements
 
     @Override
     public void rename(String source, String dest) throws IOException {
-        // Rename is only called by Lucene's IndexWriter during commit
-        // (pending_segments_N → segments_N). Format files are never renamed.
-        if (isFormatFile(source)) {
-            throw new IllegalStateException("Rename not supported for format file [" + source + "]. Format files are write-once.");
+        // Format files may be renamed during recovery (recovery.{uuid}.filename → filename).
+        // Route through SubdirectoryAwareDirectory which handles subdirectory paths.
+        if (shardPath.resolveIndex().resolve(source).getParent().equals(shardPath.resolveIndex()) == false) {
+            logger.info("rename: subdirectory file [{}] → [{}] routed to SubdirectoryAwareDirectory", source, dest);
+            in.rename(source, dest);
+            return;
         }
         tieredDirectory.rename(source, dest);
     }

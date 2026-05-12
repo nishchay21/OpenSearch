@@ -3022,6 +3022,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
     }
 
     public void openEngineAndRecoverFromTranslog(boolean syncFromRemote) throws IOException {
+        logger.info("[WARM-RECOVERY] openEngineAndRecoverFromTranslog: syncFromRemote={}, isWarm={}", syncFromRemote, indexSettings.isWarmIndex());
         recoveryState.validateCurrentStage(RecoveryState.Stage.INDEX);
         maybeCheckIndex();
         recoveryState.setStage(RecoveryState.Stage.TRANSLOG);
@@ -4308,7 +4309,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
         // }
         // }}
         // }
-        logger.debug("startRecovery type={}", recoveryState.getRecoverySource().getType());
+        logger.info("[WARM-RECOVERY] startRecovery type={}, isWarm={}, shardId={}", recoveryState.getRecoverySource().getType(), indexSettings.isWarmIndex(), shardId);
         assert recoveryState.getRecoverySource().equals(shardRouting.recoverySource());
         switch (recoveryState.getRecoverySource().getType()) {
             case EMPTY_STORE:
@@ -5777,7 +5778,9 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
         boolean syncSegmentSuccess = false;
         long startTimeMs = System.currentTimeMillis();
         assert indexSettings.isRemoteStoreEnabled() || this.isRemoteSeeded();
-        logger.trace("Downloading segments from remote segment store");
+        logger.info("[WARM-RECOVERY] syncSegmentsFromRemoteSegmentStore: overrideLocal={}, isWarm={}\n  stacktrace: {}",
+            overrideLocal, indexSettings.isWarmIndex(),
+            org.opensearch.ExceptionsHelper.stackTrace(new Exception("syncSegmentsFromRemoteSegmentStore caller")));
         RemoteSegmentStoreDirectory remoteDirectory = getRemoteDirectory();
         // We need to call RemoteSegmentStoreDirectory.init() in order to get latest metadata of the files that
         // are uploaded to the remote segment store.
@@ -5807,6 +5810,8 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
             }
             if (indexSettings.isWarmIndex() == false) {
                 copySegmentFiles(storeDirectory, remoteDirectory, null, uploadedSegments, overrideLocal, onFileSync);
+            } else {
+                logger.info("[WARM-RECOVERY] skipping copySegmentFiles (warm index), uploadedSegments={}", uploadedSegments.keySet());
             }
 
             if (remoteSegmentMetadata != null) {
@@ -5825,6 +5830,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
                 }
                 assert Arrays.stream(store.directory().listAll()).filter(f -> f.startsWith(IndexFileNames.SEGMENTS)).findAny().isEmpty()
                     || indexSettings.isWarmIndex() : "There should not be any segments file in the dir";
+                logger.info("[WARM-RECOVERY] syncSegments: committing segmentInfos gen={}, checkpoint={}", infosSnapshot.getGeneration(), processedLocalCheckpoint);
                 store.commitSegmentInfos(infosSnapshot, processedLocalCheckpoint, processedLocalCheckpoint);
             }
             syncSegmentSuccess = true;
