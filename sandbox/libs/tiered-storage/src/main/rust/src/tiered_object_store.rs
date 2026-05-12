@@ -89,7 +89,7 @@ impl TieredObjectStore {
         let entry = TieredFileEntry::new(location, remote_path.map(Arc::from));
         self.registry.register(path, entry);
 
-        native_bridge_common::log_debug!(
+        native_bridge_common::log_info!(
             "TieredObjectStore: register_file path='{}', location={}",
             path,
             location
@@ -118,7 +118,7 @@ impl TieredObjectStore {
             e.remote_path = remote_arc;
         });
 
-        native_bridge_common::log_debug!(
+        native_bridge_common::log_info!(
             "TieredObjectStore: transition path='{}', location={}",
             path,
             location
@@ -247,7 +247,7 @@ impl ObjectStore for TieredObjectStore {
         let entry = TieredFileEntry::new(FileLocation::Local, None);
         self.registry.register(path_str, entry);
 
-        native_bridge_common::log_debug!(
+        native_bridge_common::log_info!(
             "TieredObjectStore: put_opts registered LOCAL path='{}'",
             path_str,
         );
@@ -280,7 +280,7 @@ impl ObjectStore for TieredObjectStore {
         }
 
         if let Some((rp, store)) = self.resolve_remote(path_str) {
-            native_bridge_common::log_debug!(
+            native_bridge_common::log_info!(
                 "TieredObjectStore: get_opts REMOTE path='{}'",
                 path_str
             );

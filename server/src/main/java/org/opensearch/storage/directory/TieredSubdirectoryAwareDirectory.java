@@ -105,11 +105,13 @@ public class TieredSubdirectoryAwareDirectory extends FilterDirectory implements
         if (isFormatFile(name)) {
             // File already synced to remote — read directly from remote.
             if (remoteDirectory.getExistingRemoteFilename(name) != null) {
+                logger.info("openInput: format file [{}] routed to REMOTE", name);
                 return remoteDirectory.openInput(name, context);
             }
             // File not yet synced — wrap in FormatSwitchableIndexInput so that if
             // afterSyncToRemote deletes the local copy mid-read, the reader switches
             // to remote transparently (same pattern as SwitchableIndexInput for Lucene files).
+            logger.info("openInput: format file [{}] routed to LOCAL (not yet synced), wrapping in FormatSwitchable", name);
             IndexInput localInput = in.openInput(name, context);
             FormatSwitchableIndexInput switchable = new FormatSwitchableIndexInput(
                 "FormatSwitchable(" + name + ")",
@@ -128,9 +130,13 @@ public class TieredSubdirectoryAwareDirectory extends FilterDirectory implements
         if (isFormatFile(name)) {
             // Same routing as openInput — check remote first.
             if (remoteDirectory.getExistingRemoteFilename(name) != null) {
-                return remoteDirectory.fileLength(name);
+                long len = remoteDirectory.fileLength(name);
+                logger.info("fileLength: format file [{}] from REMOTE, length={}", name, len);
+                return len;
             }
-            return in.fileLength(name);
+            long len = in.fileLength(name);
+            logger.info("fileLength: format file [{}] from LOCAL, length={}", name, len);
+            return len;
         }
         return tieredDirectory.fileLength(name);
     }
@@ -138,7 +144,9 @@ public class TieredSubdirectoryAwareDirectory extends FilterDirectory implements
     @Override
     public String[] listAll() throws IOException {
         Set<String> all = new HashSet<>(Arrays.asList(tieredDirectory.listAll()));
-        return all.stream().sorted().toArray(String[]::new);
+        String[] result = all.stream().sorted().toArray(String[]::new);
+        logger.info("listAll: {} files", result.length);
+        return result;
     }
 
     @Override
@@ -152,11 +160,15 @@ public class TieredSubdirectoryAwareDirectory extends FilterDirectory implements
             String blobKey = remoteDirectory.getExistingRemoteFilename(name);
             if (blobKey == null) {
                 strategies.onRemoved(name);
+                logger.info("deleteFile: format file [{}] not in remote — removed from registry", name);
+            } else {
+                logger.info("deleteFile: format file [{}] exists in remote (blobKey={}) — skipping registry removal", name, blobKey);
             }
             try {
                 in.deleteFile(name);
+                logger.info("deleteFile: local file [{}] deleted", name);
             } catch (NoSuchFileException e) {
-                // Expected on read-only warm — file was never local or already evicted
+                logger.info("deleteFile: local file [{}] already gone (NoSuchFileException)", name);
             }
             return;
         }

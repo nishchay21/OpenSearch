@@ -219,14 +219,12 @@ pub extern "C" fn ts_remove_file(
     let store = unsafe { arc_from_ptr(store_ptr) }?;
     let path = unsafe { str_from_raw(path_ptr, path_len) }
         .map_err(|e| format!("ts_remove_file path: {}", e))?;
-    // Strip leading "/" — object_store::Path normalizes paths without leading slash
+    // Strip leading "/" — registry keys are stored without leading slash
     let path = path.strip_prefix('/').unwrap_or(path);
 
-    // Strip leading "/" — registry keys are stored without it (same as ts_register_files)
-    let path = path.strip_prefix('/').unwrap_or(path);
-    store.registry().remove(path, false);
+    let removed = store.registry().remove(path, false);
 
-    native_bridge_common::log_debug!("ffm: ts_remove_file path='{}'", path);
+    native_bridge_common::log_info!("ffm: ts_remove_file path='{}', removed={}", path, removed);
     Ok(0)
 }
 

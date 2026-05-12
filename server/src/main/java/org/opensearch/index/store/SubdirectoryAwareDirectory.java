@@ -55,7 +55,9 @@ public class SubdirectoryAwareDirectory extends FilterDirectory {
 
     @Override
     public IndexInput openInput(String name, IOContext context) throws IOException {
-        return super.openInput(parseFilePath(name), context);
+        String resolved = parseFilePath(name);
+        logger.info("openInput: name=[{}], resolved=[{}]", name, resolved);
+        return super.openInput(resolved, context);
     }
 
     @Override
@@ -63,17 +65,23 @@ public class SubdirectoryAwareDirectory extends FilterDirectory {
         String targetFilePath = parseFilePath(name);
         Path targetFile = Path.of(targetFilePath);
         Files.createDirectories(targetFile.getParent());
+        logger.info("createOutput: name=[{}], resolved=[{}]", name, targetFilePath);
         return super.createOutput(targetFilePath, context);
     }
 
     @Override
     public void deleteFile(String name) throws IOException {
-        super.deleteFile(parseFilePath(name));
+        String resolved = parseFilePath(name);
+        logger.info("deleteFile: name=[{}], resolved=[{}]", name, resolved);
+        super.deleteFile(resolved);
     }
 
     @Override
     public long fileLength(String name) throws IOException {
-        return super.fileLength(parseFilePath(name));
+        String resolved = parseFilePath(name);
+        long len = super.fileLength(resolved);
+        logger.info("fileLength: name=[{}], resolved=[{}], length={}", name, resolved, len);
+        return len;
     }
 
     @Override

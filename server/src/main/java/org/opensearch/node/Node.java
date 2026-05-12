@@ -2470,11 +2470,12 @@ public class Node implements Closeable {
      */
     private void initializeFileCache(Settings settings) throws IOException {
         if (DiscoveryNode.isWarmNode(settings) == false) {
+            logger.info("initializeFileCache: not a warm node, skipping");
             return;
         }
 
         String capacityRaw = NODE_SEARCH_CACHE_SIZE_SETTING.get(settings);
-        logger.info("cache size [{}]", capacityRaw);
+        logger.info("initializeFileCache: cache size [{}]", capacityRaw);
         if (capacityRaw.equals(ZERO)) {
             throw new SettingsException(
                 "Unable to initialize the "
@@ -2494,6 +2495,8 @@ public class Node implements Closeable {
         }
 
         this.fileCache = FileCacheFactory.createConcurrentLRUFileCache(capacity);
+        logger.info("initializeFileCache: created with capacity={}, fileCachePath={}, indicesPath={}",
+            capacity, fileCacheNodePath.fileCachePath, fileCacheNodePath.indicesPath);
         fileCacheNodePath.fileCacheReservedSize = new ByteSizeValue(this.fileCache.capacity(), ByteSizeUnit.BYTES);
         ForkJoinPool loadFileCacheThreadpool = new ForkJoinPool(
             Runtime.getRuntime().availableProcessors(),
@@ -2517,6 +2520,7 @@ public class Node implements Closeable {
             logger.error("File cache initialization failed.", exception.get());
             throw new OpenSearchException(exception.get());
         }
+        logger.info("initializeFileCache: loaded, fileCache.size={}", this.fileCache.size());
     }
 
     /**

@@ -80,6 +80,7 @@ public class FileCache implements RefCountedCache<Path, CachedIndexInput> {
 
     @Override
     public CachedIndexInput put(Path filePath, CachedIndexInput indexInput) {
+        logger.info("FileCache.put: path={}", filePath);
         CachedIndexInput cachedIndexInput = theCache.put(filePath, indexInput);
         return cachedIndexInput;
     }
@@ -101,7 +102,9 @@ public class FileCache implements RefCountedCache<Path, CachedIndexInput> {
      * @return corresponding file index input from FileCache.
      */
     public CachedIndexInput get(Path filePath) {
-        return theCache.get(filePath);
+        CachedIndexInput result = theCache.get(filePath);
+        logger.info("FileCache.get: path={}, found={}", filePath, result != null);
+        return result;
     }
 
     /**
@@ -127,11 +130,13 @@ public class FileCache implements RefCountedCache<Path, CachedIndexInput> {
 
     @Override
     public void incRef(Path key) {
+        logger.info("FileCache.incRef: path={}", key);
         theCache.incRef(key);
     }
 
     @Override
     public void decRef(Path key) {
+        logger.info("FileCache.decRef: path={}", key);
         theCache.decRef(key);
     }
 
@@ -214,6 +219,7 @@ public class FileCache implements RefCountedCache<Path, CachedIndexInput> {
      * directory within the provided file cache path.
      */
     public void restoreFromDirectory(List<Path> fileCacheDataPaths) {
+        logger.info("restoreFromDirectory: paths={}", fileCacheDataPaths);
         Stream.concat(
             fileCacheDataPaths.stream()
                 .filter(Files::isDirectory)
@@ -231,12 +237,14 @@ public class FileCache implements RefCountedCache<Path, CachedIndexInput> {
             }
         }).filter(Files::isRegularFile).forEach(path -> {
             try {
+                logger.info("restoreFromDirectory: restoring file={}, size={}", path.toAbsolutePath(), Files.size(path));
                 put(path.toAbsolutePath(), new RestoredCachedIndexInput(Files.size(path)));
                 decRef(path.toAbsolutePath());
             } catch (IOException e) {
                 throw new UncheckedIOException("Unable to retrieve cache file details. Please clear the file cache for node startup.", e);
             }
         });
+        logger.info("restoreFromDirectory: done, cache size={}", size());
     }
 
     /**
