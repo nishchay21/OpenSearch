@@ -308,6 +308,13 @@ public class DataformatAwareCatalogSnapshot extends CatalogSnapshot {
         );
     }
 
+    /**
+     * Returns the serialized Lucene SegmentInfos bytes for recovery, or null if not available.
+     */
+    public byte[] getLuceneSegmentInfosBytes() {
+        return null;
+    }
+
     @Override
     protected void closeInternal() {
         closed.set(true);

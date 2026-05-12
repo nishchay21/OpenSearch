@@ -1148,7 +1148,10 @@ public final class RemoteSegmentStoreDirectory extends FilterDirectory implement
      *
      * @return the base path as a string
      */
-    public String getRemoteBasePath() {
+    public String getRemoteBasePath(String format) {
+        if (formatBlobRouter != null && format != null && format.isEmpty() == false) {
+            return formatBlobRouter.containerFor(format).path().buildAsString();
+        }
         return remoteDataDirectory.getBlobContainer().path().buildAsString();
     }
 
