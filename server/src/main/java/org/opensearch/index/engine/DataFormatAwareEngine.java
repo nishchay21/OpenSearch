@@ -298,8 +298,7 @@ public class DataFormatAwareEngine implements Indexer {
                     Optional.ofNullable(indexingExecutionEngine.getProvider()),
                     indexingExecutionEngine.getDataFormat(),
                     registry,
-                    store.shardPath(),
-                    store.getDataformatAwareStoreHandles()
+                    store.shardPath()
                 )
             );
 
@@ -488,10 +487,6 @@ public class DataFormatAwareEngine implements Indexer {
      */
     @Override
     public Engine.IndexResult index(Engine.Index index) throws IOException {
-        // Block indexing on warm — read-only until we have a proper read-only engine
-        if (engineConfig.getIndexSettings().isWarmIndex()) {
-            throw new UnsupportedOperationException("Indexing is not supported on warm indices");
-        }
         assert Objects.equals(index.uid().field(), IdFieldMapper.NAME) : index.uid().field();
         assert (index.origin() == Engine.Operation.Origin.PRIMARY
             || index.origin() == Engine.Operation.Origin.LOCAL_TRANSLOG_RECOVERY
@@ -801,7 +796,7 @@ public class DataFormatAwareEngine implements Indexer {
                                     + " but got "
                                     + result.refreshedSegments().size();
 
-                            catalogSnapshotManager.commitNewSnapshot(result.refreshedSegments(), result.luceneSegmentInfosBytes());
+                            catalogSnapshotManager.commitNewSnapshot(result.refreshedSegments());
                         }
                         notifyRefreshListenersAfter(refreshed);
                     } finally {
@@ -853,10 +848,6 @@ public class DataFormatAwareEngine implements Indexer {
      */
     @Override
     public void flush(boolean force, boolean waitIfOngoing) throws EngineException {
-        // Skip flushing for warm indices — read-only, no local commits
-        if (engineConfig.getIndexSettings().isWarmIndex()) {
-            return;
-        }
         ensureOpen();
         if (force && waitIfOngoing == false) {
             throw new IllegalArgumentException(
@@ -978,10 +969,6 @@ public class DataFormatAwareEngine implements Indexer {
         boolean upgradeOnlyAncientSegments,
         String forceMergeUUID
     ) throws EngineException, IOException {
-        // Block merges on warm — read-only, no segment mutations
-        if (engineConfig.getIndexSettings().isWarmIndex()) {
-            return;
-        }
         mergeScheduler.forceMerge(1);
     }
 
@@ -1360,6 +1347,11 @@ public class DataFormatAwareEngine implements Indexer {
         return catalogSnapshotManager.acquireSnapshot();
     }
 
+    @Override
+    public byte[] serializeSnapshotToRemoteMetadata(CatalogSnapshot catalogSnapshot) throws IOException {
+        return catalogSnapshotManager.serializeToCommitFormat(catalogSnapshot);
+    }
+
     // Todo: We need to update this api to return catalogSnapshot instead of IndexCommit to make it decoupled with lucene.
     @Override
     public GatedCloseable<IndexCommit> acquireSafeIndexCommit() throws EngineException {
@@ -1381,12 +1373,6 @@ public class DataFormatAwareEngine implements Indexer {
         ensureOpen();
         return catalogSnapshotManager.acquireCommittedSnapshot(true);
 
-    }
-
-    /** Returns the engine's committer. Used by recovery coordinators to access format-specific state. */
-    public org.opensearch.index.engine.exec.commit.Committer getCommitter() {
-        ensureOpen();
-        return committer;
     }
 
     /**

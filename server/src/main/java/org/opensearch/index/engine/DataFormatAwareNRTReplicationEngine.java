@@ -232,7 +232,7 @@ public class DataFormatAwareNRTReplicationEngine implements Indexer {
             for (String formatName : descriptors.keySet()) {
                 DataFormat format = registry.format(formatName);
                 aggregated.putAll(
-                    registry.getReaderManager(new ReaderManagerConfig(Optional.empty(), format, registry, store.shardPath(), store.getDataformatAwareStoreHandles()))
+                    registry.getReaderManager(new ReaderManagerConfig(Optional.empty(), format, registry, store.shardPath()))
                 );
             }
             readerManagersRef = Map.copyOf(aggregated);
@@ -739,6 +739,11 @@ public class DataFormatAwareNRTReplicationEngine implements Indexer {
     public GatedCloseable<CatalogSnapshot> acquireSnapshot() {
         ensureOpen();
         return catalogSnapshotManager.acquireSnapshot();
+    }
+
+    @Override
+    public byte[] serializeSnapshotToRemoteMetadata(CatalogSnapshot catalogSnapshot) throws IOException {
+        throw new UnsupportedOperationException("Replica engine does not produce upload metadata bytes");
     }
 
     @Override

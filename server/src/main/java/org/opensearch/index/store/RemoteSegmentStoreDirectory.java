@@ -25,6 +25,7 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.util.Version;
 import org.opensearch.cluster.metadata.CryptoMetadata;
+import org.opensearch.common.CheckedFunction;
 import org.opensearch.common.Nullable;
 import org.opensearch.common.UUIDs;
 import org.opensearch.common.annotation.InternalApi;
@@ -36,7 +37,6 @@ import org.opensearch.common.lucene.store.ByteArrayIndexInput;
 import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.index.shard.ShardId;
 import org.opensearch.index.engine.exec.coord.CatalogSnapshot;
-import org.opensearch.index.engine.exec.coord.DataformatAwareCatalogSnapshot;
 import org.opensearch.index.remote.RemoteStorePathStrategy;
 import org.opensearch.index.remote.RemoteStoreUtils;
 import org.opensearch.index.store.lockmanager.FileLockInfo;
@@ -44,7 +44,6 @@ import org.opensearch.index.store.lockmanager.RemoteStoreCommitLevelLockManager;
 import org.opensearch.index.store.lockmanager.RemoteStoreLockManager;
 import org.opensearch.index.store.lockmanager.RemoteStoreMetadataLockManager;
 import org.opensearch.index.store.remote.FormatBlobRouter;
-import org.opensearch.index.store.remote.metadata.DfaRecoveryPayload;
 import org.opensearch.index.store.remote.metadata.RemoteSegmentMetadata;
 import org.opensearch.index.store.remote.metadata.RemoteSegmentMetadataHandlerFactory;
 import org.opensearch.indices.replication.checkpoint.ReplicationCheckpoint;
@@ -857,7 +856,7 @@ public final class RemoteSegmentStoreDirectory extends FilterDirectory implement
         long translogGeneration,
         ReplicationCheckpoint replicationCheckpoint,
         String nodeId,
-        Map<String, byte[]> formatStates
+        CheckedFunction<CatalogSnapshot, byte[], IOException> catalogSnapshotToCommitSerializer
     ) throws IOException {
         synchronized (this) {
             String metadataFilename = MetadataFilenameUtils.getMetadataFilename(
@@ -872,7 +871,8 @@ public final class RemoteSegmentStoreDirectory extends FilterDirectory implement
                 try (IndexOutput indexOutput = storeDirectory.createOutput(metadataFilename, IOContext.DEFAULT)) {
                     Map<String, String> uploadedSegments = new HashMap<>();
 
-                    // Each CatalogSnapshot subclass knows how to resolve per-format Lucene versions.
+                    // Polymorphic dispatch — no instanceof checks needed.
+                    // Each CatalogSnapshot subclass knows how to resolve Lucene versions for its files.
                     for (String file : segmentFiles) {
                         if (segmentsUploadedToRemoteStore.containsKey(file)) {
                             UploadedSegmentMetadata metadata = segmentsUploadedToRemoteStore.get(file);
@@ -883,27 +883,20 @@ public final class RemoteSegmentStoreDirectory extends FilterDirectory implement
                         }
                     }
 
-                    final byte[] segmentInfoBytes;
-                    final DfaRecoveryPayload dfaPayload;
-                    if (catalogSnapshot instanceof DataformatAwareCatalogSnapshot dfa) {
-                        segmentInfoBytes = dfa.serialize();            // Lucene envelope (for segrep)
-                        dfaPayload = new DfaRecoveryPayload(
-                            dfa.serializeCatalogBytes(),               // raw catalog bytes
-                            dfa.getLastCommitGeneration(),
-                            formatStates == null ? Map.of() : formatStates
-                        );
-                    } else {
-                        segmentInfoBytes = catalogSnapshot.serialize();
-                        dfaPayload = null;
-                    }
+                    // Serialize via the caller-supplied CheckedFunction so the bytes are produced
+                    // from the reader registered for this snapshot (DFA primary) or from the real
+                    // SegmentInfos (non-DFA segrep Lucene engine). If no function is supplied
+                    // (legacy BWC overload), fall back to empty bytes.
+                    final byte[] segmentInfoSnapshotByteArray = catalogSnapshotToCommitSerializer != null
+                        ? catalogSnapshotToCommitSerializer.apply(catalogSnapshot)
+                        : new byte[0];
 
                     metadataStreamWrapper.writeStream(
                         indexOutput,
                         new RemoteSegmentMetadata(
                             RemoteSegmentMetadata.fromMapOfStrings(uploadedSegments),
-                            segmentInfoBytes,
-                            replicationCheckpoint,
-                            dfaPayload
+                            segmentInfoSnapshotByteArray,
+                            replicationCheckpoint
                         )
                     );
                 }
@@ -915,7 +908,35 @@ public final class RemoteSegmentStoreDirectory extends FilterDirectory implement
         }
     }
 
-    /** Convenience overload that uploads with an empty {@code formatStates} map. */
+    /**
+     * Backwards-compatible overload; delegates with {@code null} serializer so the catalog's
+     * own {@code serialize()} is used. New callers (DFA primary upload) should use the overload
+     * that takes a {@link CheckedFunction}.
+     */
+    public void uploadMetadata(
+        Collection<String> segmentFiles,
+        CatalogSnapshot catalogSnapshot,
+        Directory storeDirectory,
+        long translogGeneration,
+        ReplicationCheckpoint replicationCheckpoint,
+        String nodeId,
+        org.apache.lucene.index.SegmentInfos luceneInMemoryInfos
+    ) throws IOException {
+        uploadMetadata(
+            segmentFiles,
+            catalogSnapshot,
+            storeDirectory,
+            translogGeneration,
+            replicationCheckpoint,
+            nodeId,
+            (CheckedFunction<CatalogSnapshot, byte[], IOException>) null
+        );
+    }
+
+    /**
+     * Backwards-compatible overload; delegates with {@code luceneInMemoryInfos=null}. New
+     * callers (DFA primary upload) should use the overload that takes {@code luceneInMemoryInfos}.
+     */
     public void uploadMetadata(
         Collection<String> segmentFiles,
         CatalogSnapshot catalogSnapshot,
@@ -924,7 +945,15 @@ public final class RemoteSegmentStoreDirectory extends FilterDirectory implement
         ReplicationCheckpoint replicationCheckpoint,
         String nodeId
     ) throws IOException {
-        uploadMetadata(segmentFiles, catalogSnapshot, storeDirectory, translogGeneration, replicationCheckpoint, nodeId, Map.of());
+        uploadMetadata(
+            segmentFiles,
+            catalogSnapshot,
+            storeDirectory,
+            translogGeneration,
+            replicationCheckpoint,
+            nodeId,
+            (CheckedFunction<CatalogSnapshot, byte[], IOException>) null
+        );
     }
 
     // TODO: When RemoteStoreRefreshListener is migrated to use CatalogSnapshot-based uploadMetadata,
@@ -1114,17 +1143,12 @@ public final class RemoteSegmentStoreDirectory extends FilterDirectory implement
     }
 
     /**
-     * Returns the blob path for the given data format.
-     * If a {@link FormatBlobRouter} is configured, uses format-specific routing
-     * (e.g., "basePath/parquet/" for parquet files). Otherwise falls back to the base path.
+     * Returns the base blob path for this shard's remote segment data.
+     * E.g., "clusterUUID/indexUUID/shardId/segments/data/"
      *
-     * @param format the data format name (e.g., "parquet", "lucene")
-     * @return the blob path as a string for the given format
+     * @return the base path as a string
      */
-    public String getRemoteBasePath(String format) {
-        if (formatBlobRouter != null && format != null && format.isEmpty() == false) {
-            return formatBlobRouter.containerFor(format).path().buildAsString();
-        }
+    public String getRemoteBasePath() {
         return remoteDataDirectory.getBlobContainer().path().buildAsString();
     }
 
