@@ -33,6 +33,7 @@
 package org.opensearch.indices.recovery;
 
 import org.apache.lucene.index.CorruptIndexException;
+import org.apache.lucene.index.IndexFileNames;
 import org.apache.lucene.index.IndexFormatTooNewException;
 import org.apache.lucene.index.IndexFormatTooOldException;
 import org.opensearch.ExceptionsHelper;
@@ -452,6 +453,21 @@ public class RecoveryTarget extends ReplicationTarget implements RecoveryTargetH
     ) {
         try {
             state().getTranslog().totalOperations(totalTranslogOps);
+            // On warm indices, skip writing format files (subdirectory files like "parquet/...")
+            // and Lucene segment files that are already accessible from remote.
+            // Only segments_N files need to be written locally (commit point).
+            if (indexShard.indexSettings().isWarmIndex()) {
+                String name = fileMetadata.name();
+                boolean isSegmentsFile = name.startsWith(IndexFileNames.SEGMENTS);
+                if (isSegmentsFile == false) {
+                    logger.info(
+                        "[RECOVERY-TARGET] skipping local write for file [{}] on warm (accessible from remote)",
+                        name
+                    );
+                    listener.onResponse(null);
+                    return;
+                }
+            }
             multiFileWriter.writeFileChunk(fileMetadata, position, content, lastChunk);
             listener.onResponse(null);
         } catch (Exception e) {

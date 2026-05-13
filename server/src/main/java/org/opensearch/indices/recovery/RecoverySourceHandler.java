@@ -503,6 +503,13 @@ public abstract class RecoverySourceHandler {
                 List<StoreFileMetadata> phase1Files = new ArrayList<>(diff.different.size() + diff.missing.size());
                 phase1Files.addAll(diff.different);
                 phase1Files.addAll(diff.missing);
+
+                logger.info(
+                    "[RECOVERY-PHASE1] files to send: different={}, missing={}, all={}",
+                    diff.different.stream().map(StoreFileMetadata::name).collect(java.util.stream.Collectors.toList()),
+                    diff.missing.stream().map(StoreFileMetadata::name).collect(java.util.stream.Collectors.toList()),
+                    phase1Files.stream().map(StoreFileMetadata::name).collect(java.util.stream.Collectors.toList())
+                );
                 for (StoreFileMetadata md : phase1Files) {
                     if (request.metadataSnapshot().asMap().containsKey(md.name())) {
                         logger.trace(

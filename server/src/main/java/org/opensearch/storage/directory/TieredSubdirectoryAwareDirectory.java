@@ -165,8 +165,12 @@ public class TieredSubdirectoryAwareDirectory extends FilterDirectory implements
     public IndexOutput createOutput(String name, IOContext context) throws IOException {
         // Format files (parquet/) need SubdirectoryAwareDirectory which creates parent dirs.
         // TieredDirectory's CompositeDirectory doesn't handle subdirectories.
-        if (shardPath.resolveIndex().resolve(name).getParent().equals(shardPath.resolveIndex()) == false) {
-            logger.info("createOutput: subdirectory file [{}] routed to SubdirectoryAwareDirectory", name);
+        if (isFormatFile(name)) {
+            logger.info(
+                "createOutput: subdirectory file [{}] routed to SubdirectoryAwareDirectory\n{}",
+                name,
+                org.opensearch.ExceptionsHelper.formatStackTrace(Thread.currentThread().getStackTrace())
+            );
             return in.createOutput(name, context);
         }
         return tieredDirectory.createOutput(name, context);
@@ -247,8 +251,13 @@ public class TieredSubdirectoryAwareDirectory extends FilterDirectory implements
     public void rename(String source, String dest) throws IOException {
         // Format files may be renamed during recovery (recovery.{uuid}.filename → filename).
         // Route through SubdirectoryAwareDirectory which handles subdirectory paths.
-        if (shardPath.resolveIndex().resolve(source).getParent().equals(shardPath.resolveIndex()) == false) {
-            logger.info("rename: subdirectory file [{}] → [{}] routed to SubdirectoryAwareDirectory", source, dest);
+        if (isFormatFile(source)) {
+            logger.info(
+                "rename: format file [{}] → [{}]\n{}",
+                source,
+                dest,
+                org.opensearch.ExceptionsHelper.formatStackTrace(Thread.currentThread().getStackTrace())
+            );
             in.rename(source, dest);
             return;
         }

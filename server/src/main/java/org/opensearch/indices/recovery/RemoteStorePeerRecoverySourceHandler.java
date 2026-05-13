@@ -72,7 +72,12 @@ public class RemoteStorePeerRecoverySourceHandler extends RecoverySourceHandler 
         }
 
         final long startingSeqNo = Long.parseLong(wrappedSafeSnapshot.get().getUserData().get(SequenceNumbers.LOCAL_CHECKPOINT_KEY)) + 1L;
-        logger.trace("performing file-based recovery followed by history replay starting at [{}]", startingSeqNo);
+        logger.info(
+            "[REMOTE-PEER-RECOVERY] performing file-based recovery starting at [{}], snapshotFiles={}, targetNode={}",
+            startingSeqNo,
+            wrappedSafeSnapshot.get().getFiles(true),
+            request.targetNode().getName()
+        );
 
         try {
             final Releasable releaseStore = acquireStore(shard.store());

@@ -336,6 +336,11 @@ public class PeerRecoveryTargetService implements IndexEventListener {
         Store.MetadataSnapshot metadataSnapshot;
         try {
             metadataSnapshot = recoveryTarget.indexShard().snapshotStoreMetadata();
+            logger.info(
+                "[RECOVERY-TARGET-META] target metadataSnapshot files={}, size={}",
+                metadataSnapshot.asMap().keySet(),
+                metadataSnapshot.size()
+            );
             if (verifyTranslog) {
                 // Make sure that the current translog is consistent with the Lucene index; otherwise, we have to throw away the Lucene
                 // index.
