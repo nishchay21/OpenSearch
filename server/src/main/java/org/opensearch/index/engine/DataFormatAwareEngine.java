@@ -340,7 +340,7 @@ public class DataFormatAwareEngine implements Indexer {
             // Bump catalog generation on engine open so uploads from this primary do not collide
             // with a prior primary's uploads for the same shard. See method Javadoc for rationale.
             if (!emptyRecovery) {
-                this.catalogSnapshotManager.bumpGenerationForNewEngineLifecycle();
+                this.catalogSnapshotManager.bumpGeneration();
             }
 
             this.lastRefreshedCheckpointListener = new LastRefreshedCheckpointListener(localCheckpointTracker);
@@ -813,6 +813,8 @@ public class DataFormatAwareEngine implements Indexer {
                                     + result.refreshedSegments().size();
 
                             catalogSnapshotManager.commitNewSnapshot(result.refreshedSegments());
+                        } else if ("flush".equals(source)) {
+                                catalogSnapshotManager.bumpGeneration();
                         }
                         notifyRefreshListenersAfter(refreshed);
                     } finally {
