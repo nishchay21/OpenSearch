@@ -31,6 +31,7 @@ import org.opensearch.index.engine.dataformat.stub.InMemoryCommitter;
 import org.opensearch.index.engine.dataformat.stub.MockDataFormat;
 import org.opensearch.index.engine.dataformat.stub.MockDataFormatPlugin;
 import org.opensearch.index.engine.dataformat.stub.MockSearchBackEndPlugin;
+import org.opensearch.index.engine.exec.CommitFileManager;
 import org.opensearch.index.engine.exec.FileDeleter;
 import org.opensearch.index.engine.exec.Segment;
 import org.opensearch.index.engine.exec.commit.CommitterFactory;
@@ -337,7 +338,21 @@ public class DataFormatAwareNRTReplicationEngineTests extends OpenSearchTestCase
         java.nio.file.Files.createDirectories(parquetDir);
         ShardPath shardPath = new ShardPath(false, root, root, shardId);
 
-        Map<String, FileDeleter> deleters = DataFormatAwareNRTReplicationEngine.buildReplicaFileDeleters(shardPath, registry);
+        CommitFileManager committer = new CommitFileManager() {
+            @Override
+            public void deleteCommit(CatalogSnapshot snapshot) {}
+
+            @Override
+            public boolean isCommitManagedFile(String fileName) {
+                return fileName.startsWith("segments_") || fileName.equals("write.lock");
+            }
+
+            @Override
+            public byte[] serializeToCommitFormat(CatalogSnapshot snapshot) {
+                throw new UnsupportedOperationException("not used by this test");
+            }
+        };
+        Map<String, FileDeleter> deleters = DataFormatAwareNRTReplicationEngine.buildReplicaFileDeleters(shardPath, registry, committer);
 
         assertTrue("parquet deleter must be present", deleters.containsKey("parquet"));
         assertTrue("lucene deleter must be present", deleters.containsKey("lucene"));
