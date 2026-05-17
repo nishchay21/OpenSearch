@@ -964,7 +964,7 @@ public class DataFormatAwareNRTReplicationEngine implements Indexer {
         };
     }
 
-    private static class ReplicaDeletionPolicy implements CatalogSnapshotDeletionPolicy {
+    static class ReplicaDeletionPolicy implements CatalogSnapshotDeletionPolicy {
 
         private final List<CatalogSnapshot> acquiredSnapshots = new CopyOnWriteArrayList<>();
         private CatalogSnapshot lastSnapshot;
