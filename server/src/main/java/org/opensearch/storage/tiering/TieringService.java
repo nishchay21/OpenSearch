@@ -530,8 +530,16 @@ public abstract class TieringService implements ClusterStateListener {
             // 1. Build settings
             Settings.Builder indexSettingsBuilder = Settings.builder().put(indexMetadata.getSettings()).put(getTieringStartSettingsToAdd());
 
-            // 2. Handle replica updates using auto_expand_replicas
-            indexSettingsBuilder.put(IndexMetadata.SETTING_AUTO_EXPAND_REPLICAS, "0-" + 1);
+            // 2. Handle replica updates using auto_expand_replicas.
+            // auto_expand_replicas: "0-1" scales replicas dynamically with available warm nodes
+            // (0 if single warm node, 1 if 2+ warm nodes available).
+            int currentReplicas = Integer.parseInt(
+                indexMetadata.getSettings().get(IndexMetadata.INDEX_NUMBER_OF_REPLICAS_SETTING.getKey())
+            );
+            indexSettingsBuilder.put(IndexMetadata.SETTING_AUTO_EXPAND_REPLICAS, "0-1");
+            if (currentReplicas != 1) {
+                indexSettingsBuilder.put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 1);
+            }
 
             // 3. Create tiering custom data
             Map<String, String> tieringCustomData = new HashMap<>();
@@ -544,6 +552,17 @@ public abstract class TieringService implements ClusterStateListener {
                 .settingsVersion(1 + indexMetadata.getSettingsVersion());
 
             metadataBuilder.put(indexMetadataBuilder);
+
+            // 5. Update routing table if replicas were changed.
+            // This must happen in the same cluster state update to keep the routing table
+            // consistent with the metadata. Without this, the ReplicationTracker on the warm
+            // node may see stale allocation IDs during shard relocation, causing an assertion
+            // failure in renewPeerRecoveryRetentionLeases.
+            if (currentReplicas != 1) {
+                final String[] indices = new String[] { index.getName() };
+                routingTableBuilder.updateNumberOfReplicas(1, indices);
+                metadataBuilder.updateNumberOfReplicas(1, indices);
+            }
         } catch (Exception e) {
             throw new OpenSearchException("Failed to update index metadata for tiering start", e);
         }

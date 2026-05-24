@@ -57,7 +57,6 @@ import static org.opensearch.index.IndexModule.INDEX_TIERING_STATE;
 import static org.opensearch.index.IndexModule.TieringState.HOT_TO_WARM;
 import static org.opensearch.storage.common.tiering.TieringUtils.TIERING_CUSTOM_KEY;
 import static org.mockito.Mockito.any;
-import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.anyString;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.eq;
@@ -514,9 +513,9 @@ public class TieringServiceTests extends OpenSearchTestCase {
 
         tieringService.updateIndexMetadataForTieringStart(metadataBuilder, routingTableBuilder, indexMetadata, testIndex);
 
-        // auto_expand_replicas is used instead of direct replica count manipulation
-        verify(routingTableBuilder, never()).updateNumberOfReplicas(anyInt(), any(String[].class));
-        verify(metadataBuilder, never()).updateNumberOfReplicas(anyInt(), any(String[].class));
+        // When currentReplicas != 1, routing table and metadata are updated to 1
+        verify(routingTableBuilder).updateNumberOfReplicas(eq(1), any(String[].class));
+        verify(metadataBuilder).updateNumberOfReplicas(eq(1), any(String[].class));
 
         ArgumentCaptor<IndexMetadata.Builder> captor = ArgumentCaptor.forClass(IndexMetadata.Builder.class);
         verify(metadataBuilder).put(captor.capture());
