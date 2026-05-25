@@ -10,6 +10,7 @@ package org.opensearch.storage.tiering;
 
 import org.opensearch.cluster.ClusterInfoService;
 import org.opensearch.cluster.ClusterState;
+import org.opensearch.cluster.block.ClusterBlocks;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.routing.allocation.AllocationService;
@@ -130,7 +131,34 @@ public class HotToWarmTieringService extends TieringService {
             .put(INDEX_TIERING_STATE.getKey(), HOT)
             .put(INDEX_COMPOSITE_STORE_TYPE_SETTING.getKey(), "default")
             .put(IndexMetadata.INDEX_BLOCKS_READ_ONLY_ALLOW_DELETE_SETTING.getKey(), false)
+            .put(IndexMetadata.INDEX_BLOCKS_WRITE_SETTING.getKey(), false)
             .build();
+    }
+
+    /**
+     * H2W tier start → blocks are added by TransportHotToWarmTierAction.addReadOnlyBlockAndPrepare()
+     * BEFORE tier() is called. No action needed here — return unchanged.
+     */
+    @Override
+    protected ClusterBlocks.Builder getClusterBlocksAfterTierStart(
+        ClusterBlocks.Builder blocksBuilder,
+        String indexName
+    ) {
+        return blocksBuilder; // no-op: blocks already set by TransportHotToWarmTierAction
+    }
+
+    /**
+     * Cancelling H2W → index reverts to HOT → remove write blocks so it becomes writable again.
+     * Symmetric with getIndexTierSettingsToRestoreAfterCancellation() which sets blocks.write=false.
+     */
+    @Override
+    protected ClusterBlocks.Builder getClusterBlocksAfterCancellation(
+        ClusterBlocks.Builder blocksBuilder,
+        String indexName
+    ) {
+        return blocksBuilder
+            .removeIndexBlock(indexName, IndexMetadata.INDEX_READ_ONLY_ALLOW_DELETE_BLOCK)
+            .removeIndexBlock(indexName, IndexMetadata.INDEX_WRITE_BLOCK);
     }
 
     @Override
@@ -161,4 +189,6 @@ public class HotToWarmTieringService extends TieringService {
     private void setFileCacheActiveUsageThreshold(Integer fileCacheActiveUsageThreshold) {
         this.fileCacheActiveUsageThresholdPercent = fileCacheActiveUsageThreshold;
     }
+
+
 }

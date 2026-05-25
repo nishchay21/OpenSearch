@@ -25,7 +25,7 @@ import org.opensearch.common.inject.Inject;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.index.Index;
-import org.opensearch.index.IndexSettings;
+import org.opensearch.storage.common.tiering.TieringUtils;
 import org.opensearch.storage.tiering.HotToWarmTieringService;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.TransportService;
@@ -86,7 +86,7 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
     @Override
     protected void clusterManagerOperation(IndexTieringRequest request, ClusterState state, ActionListener<AcknowledgedResponse> listener)
         throws Exception {
-        if (isDfaIndex(request.getIndex(), state)) {
+        if (TieringUtils.isDfaIndex(request.getIndex(), state)) {
             // Validate FIRST — before any state-mutating or expensive operations.
             // If validation fails (e.g. warm nodes full, too many concurrent requests),
             // reject immediately without adding a read-only block or running prepare.
@@ -126,9 +126,17 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
                     if (indexMetadata == null) {
                         throw new IllegalStateException("Index [" + request.getIndex() + "] not found");
                     }
+                    // Add both read_only_allow_delete and write blocks.
+                    // - read_only_allow_delete: prevents new writes and is used as a preparation gate
+                    //   before the remote store sync (flush + refresh).
+                    // - write (blocks.write): a hard write block that survives even if
+                    //   DiskThresholdMonitor auto-removes the read_only_allow_delete block.
+                    // Both are set in metadata (persisted, survives restart) AND in ClusterBlocks
+                    // (enforced immediately at the transport layer on every write request).
                     Settings.Builder indexSettingsBuilder = Settings.builder()
                         .put(indexMetadata.getSettings())
-                        .put(IndexMetadata.INDEX_BLOCKS_READ_ONLY_ALLOW_DELETE_SETTING.getKey(), true);
+                        .put(IndexMetadata.INDEX_BLOCKS_READ_ONLY_ALLOW_DELETE_SETTING.getKey(), true)
+                        .put(IndexMetadata.INDEX_BLOCKS_WRITE_SETTING.getKey(), true);
 
                     IndexMetadata.Builder indexMetadataBuilder = IndexMetadata.builder(indexMetadata)
                         .settings(indexSettingsBuilder)
@@ -137,6 +145,7 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
                     Metadata.Builder metadataBuilder = Metadata.builder(currentState.metadata()).put(indexMetadataBuilder);
                     ClusterBlocks.Builder blocks = ClusterBlocks.builder().blocks(currentState.blocks());
                     blocks.addIndexBlock(request.getIndex(), IndexMetadata.INDEX_READ_ONLY_ALLOW_DELETE_BLOCK);
+                    blocks.addIndexBlock(request.getIndex(), IndexMetadata.INDEX_WRITE_BLOCK);
 
                     return ClusterState.builder(currentState).metadata(metadataBuilder).blocks(blocks).build();
                 }
@@ -254,7 +263,8 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
                     }
                     Settings.Builder indexSettingsBuilder = Settings.builder()
                         .put(indexMetadata.getSettings())
-                        .put(IndexMetadata.INDEX_BLOCKS_READ_ONLY_ALLOW_DELETE_SETTING.getKey(), false);
+                        .put(IndexMetadata.INDEX_BLOCKS_READ_ONLY_ALLOW_DELETE_SETTING.getKey(), false)
+                        .put(IndexMetadata.INDEX_BLOCKS_WRITE_SETTING.getKey(), false);
 
                     IndexMetadata.Builder indexMetadataBuilder = IndexMetadata.builder(indexMetadata)
                         .settings(indexSettingsBuilder)
@@ -263,6 +273,7 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
                     Metadata.Builder metadataBuilder = Metadata.builder(currentState.metadata()).put(indexMetadataBuilder);
                     ClusterBlocks.Builder blocks = ClusterBlocks.builder().blocks(currentState.blocks());
                     blocks.removeIndexBlock(indexName, IndexMetadata.INDEX_READ_ONLY_ALLOW_DELETE_BLOCK);
+                    blocks.removeIndexBlock(indexName, IndexMetadata.INDEX_WRITE_BLOCK);
 
                     return ClusterState.builder(currentState).metadata(metadataBuilder).blocks(blocks).build();
                 }
@@ -283,16 +294,5 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
                 }
             }
         );
-    }
-
-    /**
-     * Checks if the index has pluggable data format enabled (is a DFA index).
-     */
-    private boolean isDfaIndex(String indexName, ClusterState state) {
-        IndexMetadata indexMetadata = state.metadata().index(indexName);
-        if (indexMetadata == null) {
-            return false;
-        }
-        return indexMetadata.getSettings().getAsBoolean(IndexSettings.PLUGGABLE_DATAFORMAT_ENABLED_SETTING.getKey(), false);
     }
 }

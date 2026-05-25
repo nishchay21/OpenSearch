@@ -18,6 +18,7 @@ import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.ClusterStateListener;
 import org.opensearch.cluster.ClusterStateUpdateTask;
 import org.opensearch.cluster.ack.ClusterStateUpdateResponse;
+import org.opensearch.cluster.block.ClusterBlocks;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.metadata.Metadata;
@@ -42,6 +43,7 @@ import org.opensearch.storage.action.tiering.CancelTieringRequest;
 import org.opensearch.storage.action.tiering.IndexTieringRequest;
 import org.opensearch.storage.action.tiering.status.model.TieringStatus;
 import org.opensearch.storage.common.tiering.TieringRejectionException;
+import org.opensearch.storage.common.tiering.TieringUtils;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -148,6 +150,45 @@ public abstract class TieringService implements ClusterStateListener {
 
     /** Returns the index tier settings to restore after cancellation. @return the settings to restore */
     protected abstract Settings getIndexTierSettingsToRestoreAfterCancellation();
+
+    /**
+     * Returns a {@link ClusterBlocks.Builder} with any tier-specific ClusterBlock changes applied
+     * when a tier start operation is committed, called inside the cluster state update in
+     * {@link #tier(IndexTieringRequest, ActionListener, ClusterState)} after metadata is updated.
+     * Only called for DFA indices.
+     *
+     * <p>For H2W DFA: blocks are added by {@code TransportHotToWarmTierAction.addReadOnlyBlockAndPrepare()}
+     * BEFORE {@code tier()} is called, so no action is needed — return the builder unchanged.
+     * For W2H DFA: remove write blocks so the index becomes writable on the hot tier.
+     *
+     * @param blocksBuilder the ClusterBlocks builder pre-populated with the current blocks
+     * @param indexName the name of the index being tiered
+     * @return the updated builder (may be the same object with modifications applied)
+     */
+    protected abstract ClusterBlocks.Builder getClusterBlocksAfterTierStart(
+        ClusterBlocks.Builder blocksBuilder,
+        String indexName
+    );
+
+    /**
+     * Returns a {@link ClusterBlocks.Builder} with any tier-specific ClusterBlock changes applied
+     * for a cancel operation. This is the symmetric counterpart to
+     * {@link #getIndexTierSettingsToRestoreAfterCancellation()} — the settings side clears/restores
+     * blocks in IndexMetadata, while this method does the same in the runtime ClusterBlocks.
+     *
+     * <p>Default is a no-op (returns the same builder unchanged). Subclasses that add or remove
+     * runtime blocks during tiering must override this to keep ClusterBlocks consistent.
+     *
+     * @param blocksBuilder the ClusterBlocks builder pre-populated with the current blocks
+     * @param indexName the name of the index being cancelled
+     * @return the updated builder (may be the same object with modifications applied)
+     */
+    protected ClusterBlocks.Builder getClusterBlocksAfterCancellation(
+        ClusterBlocks.Builder blocksBuilder,
+        String indexName
+    ) {
+        return blocksBuilder; // no-op: most tiers don't manage write blocks
+    }
 
     /** Returns the key for tiering start time. @return the tiering start time key */
     protected abstract String getTieringStartTimeKey();
@@ -380,10 +421,23 @@ public abstract class TieringService implements ClusterStateListener {
 
                     updateIndexMetadataForTieringCancel(metadataBuilder, indexMetadata);
 
-                    ClusterState updatedState = ClusterState.builder(currentState)
+                    ClusterState.Builder stateBuilder = ClusterState.builder(currentState)
                         .metadata(metadataBuilder)
-                        .routingTable(routingTableBuilder.build())
-                        .build();
+                        .routingTable(routingTableBuilder.build());
+
+                    // For DFA indices, delegate ClusterBlocks updates for cancel to the subclass
+                    // via getClusterBlocksAfterCancellation(). Non-DFA indices don't manage write
+                    // blocks so ClusterBlocks is left unchanged.
+                    if (TieringUtils.isDfaIndex(index.getName(), currentState)) {
+                        stateBuilder.blocks(
+                            getClusterBlocksAfterCancellation(
+                                ClusterBlocks.builder().blocks(currentState.blocks()),
+                                index.getName()
+                            )
+                        );
+                    }
+
+                    ClusterState updatedState = stateBuilder.build();
 
                     // Trigger reroute to move shards back to original state
                     return allocationService.reroute(updatedState, source);
@@ -471,10 +525,23 @@ public abstract class TieringService implements ClusterStateListener {
 
                     updateIndexMetadataForTieringStart(metadataBuilder, routingTableBuilder, indexMetadata, index);
 
-                    ClusterState updatedState = ClusterState.builder(currentState)
+                    // For DFA indices, delegate ClusterBlocks updates to the subclass via
+                    // getClusterBlocksAfterTierStart(). Non-DFA indices don't manage write
+                    // blocks so ClusterBlocks is left unchanged.
+                    ClusterState.Builder stateBuilder = ClusterState.builder(currentState)
                         .metadata(metadataBuilder)
-                        .routingTable(routingTableBuilder.build())
-                        .build();
+                        .routingTable(routingTableBuilder.build());
+
+                    if (TieringUtils.isDfaIndex(index.getName(), currentState)) {
+                        stateBuilder.blocks(
+                            getClusterBlocksAfterTierStart(
+                                ClusterBlocks.builder().blocks(currentState.blocks()),
+                                index.getName()
+                            )
+                        );
+                    }
+
+                    ClusterState updatedState = stateBuilder.build();
 
                     // now, reroute to trigger shard relocation
                     return allocationService.reroute(updatedState, source);
@@ -527,11 +594,11 @@ public abstract class TieringService implements ClusterStateListener {
         final Index index
     ) {
         try {
-            // 1. Build settings
+            // 1. Build settings.
             Settings.Builder indexSettingsBuilder = Settings.builder().put(indexMetadata.getSettings()).put(getTieringStartSettingsToAdd());
 
-            // 2. Handle replica updates using auto_expand_replicas
-            indexSettingsBuilder.put(IndexMetadata.SETTING_AUTO_EXPAND_REPLICAS, "0-" + 1);
+            // 2. Always set number_of_replicas to 1 to ensure routing table consistency.
+            indexSettingsBuilder.put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 1);
 
             // 3. Create tiering custom data
             Map<String, String> tieringCustomData = new HashMap<>();
@@ -544,6 +611,15 @@ public abstract class TieringService implements ClusterStateListener {
                 .settingsVersion(1 + indexMetadata.getSettingsVersion());
 
             metadataBuilder.put(indexMetadataBuilder);
+
+            // 5. Update routing table to ensure ReplicationTracker consistency.
+            // This must happen in the same cluster state update to keep the routing table
+            // consistent with the metadata. Without this, the ReplicationTracker on the warm
+            // node may see stale allocation IDs during shard relocation, causing an assertion
+            // failure in renewPeerRecoveryRetentionLeases.
+            final String[] indices = new String[] { index.getName() };
+            routingTableBuilder.updateNumberOfReplicas(1, indices);
+            metadataBuilder.updateNumberOfReplicas(1, indices);
         } catch (Exception e) {
             throw new OpenSearchException("Failed to update index metadata for tiering start", e);
         }
