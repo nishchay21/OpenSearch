@@ -18,6 +18,7 @@ import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.ClusterStateListener;
 import org.opensearch.cluster.ClusterStateUpdateTask;
 import org.opensearch.cluster.ack.ClusterStateUpdateResponse;
+import org.opensearch.cluster.block.ClusterBlocks;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.metadata.Metadata;
@@ -42,6 +43,7 @@ import org.opensearch.storage.action.tiering.CancelTieringRequest;
 import org.opensearch.storage.action.tiering.IndexTieringRequest;
 import org.opensearch.storage.action.tiering.status.model.TieringStatus;
 import org.opensearch.storage.common.tiering.TieringRejectionException;
+import org.opensearch.storage.common.tiering.TieringUtils;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -471,10 +473,21 @@ public abstract class TieringService implements ClusterStateListener {
 
                     updateIndexMetadataForTieringStart(metadataBuilder, routingTableBuilder, indexMetadata, index);
 
-                    ClusterState updatedState = ClusterState.builder(currentState)
+                    // For DFA indices, ensure the read_only_allow_delete block is present in ClusterBlocks.
+                    // The setting is persisted in metadata, but the runtime block must also be in ClusterBlocks
+                    // for write rejection to be enforced at the transport layer.
+                    ClusterState.Builder stateBuilder = ClusterState.builder(currentState)
                         .metadata(metadataBuilder)
-                        .routingTable(routingTableBuilder.build())
-                        .build();
+                        .routingTable(routingTableBuilder.build());
+
+                    if (TieringUtils.isDfaIndex(index.getName(), currentState)) {
+                        ClusterBlocks.Builder blocksBuilder = ClusterBlocks.builder().blocks(currentState.blocks());
+                        blocksBuilder.addIndexBlock(index.getName(), IndexMetadata.INDEX_READ_ONLY_ALLOW_DELETE_BLOCK);
+                        blocksBuilder.addIndexBlock(index.getName(), IndexMetadata.INDEX_WRITE_BLOCK);
+                        stateBuilder.blocks(blocksBuilder);
+                    }
+
+                    ClusterState updatedState = stateBuilder.build();
 
                     // now, reroute to trigger shard relocation
                     return allocationService.reroute(updatedState, source);
@@ -530,16 +543,19 @@ public abstract class TieringService implements ClusterStateListener {
             // 1. Build settings
             Settings.Builder indexSettingsBuilder = Settings.builder().put(indexMetadata.getSettings()).put(getTieringStartSettingsToAdd());
 
+            // For DFA indices, add read_only_allow_delete and write block to prevent writes during and after tiering.
+            // read_only_allow_delete may be auto-removed by DiskThresholdMonitor, so write block is added as backup.
+            if (TieringUtils.isDfaIndex(indexMetadata)) {
+                indexSettingsBuilder.put(IndexMetadata.INDEX_BLOCKS_READ_ONLY_ALLOW_DELETE_SETTING.getKey(), true);
+                indexSettingsBuilder.put(IndexMetadata.INDEX_BLOCKS_WRITE_SETTING.getKey(), true);
+            }
+
             // 2. Handle replica updates using auto_expand_replicas.
             // auto_expand_replicas: "0-1" scales replicas dynamically with available warm nodes
             // (0 if single warm node, 1 if 2+ warm nodes available).
-            int currentReplicas = Integer.parseInt(
-                indexMetadata.getSettings().get(IndexMetadata.INDEX_NUMBER_OF_REPLICAS_SETTING.getKey())
-            );
+            // Always set number_of_replicas to 1 to ensure routing table consistency.
             indexSettingsBuilder.put(IndexMetadata.SETTING_AUTO_EXPAND_REPLICAS, "0-1");
-            if (currentReplicas != 1) {
-                indexSettingsBuilder.put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 1);
-            }
+            indexSettingsBuilder.put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 1);
 
             // 3. Create tiering custom data
             Map<String, String> tieringCustomData = new HashMap<>();
@@ -553,16 +569,14 @@ public abstract class TieringService implements ClusterStateListener {
 
             metadataBuilder.put(indexMetadataBuilder);
 
-            // 5. Update routing table if replicas were changed.
+            // 5. Update routing table to ensure ReplicationTracker consistency.
             // This must happen in the same cluster state update to keep the routing table
             // consistent with the metadata. Without this, the ReplicationTracker on the warm
             // node may see stale allocation IDs during shard relocation, causing an assertion
             // failure in renewPeerRecoveryRetentionLeases.
-            if (currentReplicas != 1) {
-                final String[] indices = new String[] { index.getName() };
-                routingTableBuilder.updateNumberOfReplicas(1, indices);
-                metadataBuilder.updateNumberOfReplicas(1, indices);
-            }
+            final String[] indices = new String[] { index.getName() };
+            routingTableBuilder.updateNumberOfReplicas(1, indices);
+            metadataBuilder.updateNumberOfReplicas(1, indices);
         } catch (Exception e) {
             throw new OpenSearchException("Failed to update index metadata for tiering start", e);
         }
