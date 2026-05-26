@@ -1424,7 +1424,17 @@ public class ReplicationTracker extends AbstractIndexShardComponent implements L
                     Math.max(0L, checkpoints.get(shardAllocationId).globalCheckpoint + 1),
                     PEER_RECOVERY_RETENTION_LEASE_SOURCE
                 );
-                hasAllPeerRecoveryRetentionLeases = true;
+                // For warm indices with pluggable data format (DFA read-only engine), keep this flag false here.
+                // At this point we only created a lease for the primary itself — replicas still need their leases
+                // created via ensurePeerRecoveryRetentionLeasesExist() which runs asynchronously. If we set this
+                // flag true now, renewPeerRecoveryRetentionLeases() on the management thread can race and hit the
+                // assertion before the async lease creation completes. The flag will be set to true later when
+                // createMissingPeerRecoveryRetentionLeases() finishes and all replica leases are in place.
+                if (indexSettings.isWarmIndex() && indexSettings.isPluggableDataFormatEnabled()) {
+                    hasAllPeerRecoveryRetentionLeases = false;
+                } else {
+                    hasAllPeerRecoveryRetentionLeases = true;
+                }
             } else {
                 /*
                  * We got here here via a rolling upgrade from an older version that doesn't create peer recovery retention

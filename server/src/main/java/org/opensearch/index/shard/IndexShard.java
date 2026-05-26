@@ -874,13 +874,13 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
                     if (currentRouting.initializing() && currentRouting.isRelocationTarget() == false && newRouting.active()) {
                         // the cluster-manager started a recovering primary, activate primary mode.
                         replicationTracker.activatePrimaryMode(getLocalCheckpoint());
-                        // DFA warm primaries: skip postActivatePrimaryMode (retention lease creation,
-                        // remote translog upload). Primary mode is still activated so that
-                        // initiateTracking() works during replica recovery. Retention leases are not
-                        // created, so hasAllPeerRecoveryRetentionLeases stays false and
-                        // renewPeerRecoveryRetentionLeases() assertions pass harmlessly.
+                        // DFA warm primaries: skip postActivatePrimaryMode (no remote translog upload
+                        // needed) but still ensure peer recovery retention leases exist for replicas
+                        // to avoid assertion failures in renewPeerRecoveryRetentionLeases().
                         if (getIndexer() instanceof DataFormatAwareReadOnlyEngine == false) {
                             postActivatePrimaryMode();
+                        } else {
+                            ensurePeerRecoveryRetentionLeasesExist();
                         }
                     }
                 } else {
@@ -956,8 +956,8 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
                             }
 
                             // DFA warm primaries: activate primary mode (needed for initiateTracking
-                            // during replica recovery) but skip postActivatePrimaryMode (no retention
-                            // lease creation, no remote translog upload).
+                            // during replica recovery) but skip postActivatePrimaryMode (no remote
+                            // translog upload). Still ensure retention leases exist for replicas.
                             if (getIndexer() instanceof DataFormatAwareReadOnlyEngine == false) {
                                 replicationTracker.activatePrimaryMode(getLocalCheckpoint());
                                 if (indexSettings.isSegRepEnabledOrRemoteNode()) {
@@ -968,6 +968,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
                                 postActivatePrimaryMode();
                             } else {
                                 replicationTracker.activatePrimaryMode(getLocalCheckpoint());
+                                ensurePeerRecoveryRetentionLeasesExist();
                             }
                             /*
                              * If this shard was serving as a replica shard when another shard was promoted to primary then
@@ -4218,10 +4219,13 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
         synchronized (mutex) {
             replicationTracker.activateWithPrimaryContext(primaryContext); // make changes to primaryMode flag only under mutex
         }
-        // DFA warm primaries: skip postActivatePrimaryMode (no retention leases, no remote
-        // translog upload). Primary mode is activated via primaryContext so initiateTracking works.
+        // DFA warm primaries: skip postActivatePrimaryMode (no remote translog upload).
+        // Primary mode is activated via primaryContext so initiateTracking works.
+        // Still ensure retention leases exist for replicas.
         if (getIndexer() instanceof DataFormatAwareReadOnlyEngine == false) {
             postActivatePrimaryMode();
+        } else {
+            ensurePeerRecoveryRetentionLeasesExist();
         }
     }
 
