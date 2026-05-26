@@ -132,6 +132,7 @@ import org.opensearch.index.cache.request.ShardRequestCache;
 import org.opensearch.index.codec.CodecService;
 import org.opensearch.index.engine.CommitStats;
 import org.opensearch.index.engine.DataFormatAwareEngine;
+import org.opensearch.index.engine.DataFormatAwareReadOnlyEngine;
 import org.opensearch.index.engine.Engine;
 import org.opensearch.index.engine.Engine.GetResult;
 import org.opensearch.index.engine.EngineBackedIndexer;
@@ -320,6 +321,9 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
     private final PendingReplicationActions pendingReplicationActions;
     private final ReplicationTracker replicationTracker;
     private final SegmentReplicationCheckpointPublisher checkpointPublisher;
+    // Block segment uploads to remote store after pre-tiering sync completes.
+    // Prevents post-sync merges from uploading new segments that the warm node won't use.
+    private volatile boolean blockSegmentsUploadToRemote = false;
 
     protected volatile ShardRouting shardRouting;
     protected volatile IndexShardState state;
@@ -720,6 +724,22 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
     }
 
     /**
+     * Returns whether segment uploads to remote store are blocked.
+     * Used by RemoteStoreRefreshListener to skip uploads after pre-tiering sync.
+     */
+    public boolean isSegmentsUploadToRemoteBlocked() {
+        return blockSegmentsUploadToRemote;
+    }
+
+    /**
+     * Blocks segment uploads to remote store. Called after pre-tiering sync completes
+     * to prevent post-sync merges from uploading segments the warm node won't use.
+     */
+    public void blockSegmentsUploadToRemote() {
+        this.blockSegmentsUploadToRemote = true;
+    }
+
+    /**
      * Returns the name of the default codec in codecService
      */
     public String getDefaultCodecName() {
@@ -854,7 +874,14 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
                     if (currentRouting.initializing() && currentRouting.isRelocationTarget() == false && newRouting.active()) {
                         // the cluster-manager started a recovering primary, activate primary mode.
                         replicationTracker.activatePrimaryMode(getLocalCheckpoint());
-                        postActivatePrimaryMode();
+                        // DFA warm primaries: skip postActivatePrimaryMode (retention lease creation,
+                        // remote translog upload). Primary mode is still activated so that
+                        // initiateTracking() works during replica recovery. Retention leases are not
+                        // created, so hasAllPeerRecoveryRetentionLeases stays false and
+                        // renewPeerRecoveryRetentionLeases() assertions pass harmlessly.
+                        if (getIndexer() instanceof DataFormatAwareReadOnlyEngine == false) {
+                            postActivatePrimaryMode();
+                        }
                     }
                 } else {
                     assert currentRouting.primary() == false : "term is only increased as part of primary promotion";
@@ -928,13 +955,20 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
                                 updateReplicationCheckpoint();
                             }
 
-                            replicationTracker.activatePrimaryMode(getLocalCheckpoint());
-                            if (indexSettings.isSegRepEnabledOrRemoteNode()) {
-                                // force publish a checkpoint once in primary mode so that replicas not caught up to previous primary
-                                // are brought up to date.
-                                checkpointPublisher.publish(this, getLatestReplicationCheckpoint());
+                            // DFA warm primaries: activate primary mode (needed for initiateTracking
+                            // during replica recovery) but skip postActivatePrimaryMode (no retention
+                            // lease creation, no remote translog upload).
+                            if (getIndexer() instanceof DataFormatAwareReadOnlyEngine == false) {
+                                replicationTracker.activatePrimaryMode(getLocalCheckpoint());
+                                if (indexSettings.isSegRepEnabledOrRemoteNode()) {
+                                    // force publish a checkpoint once in primary mode so that replicas not caught up to previous primary
+                                    // are brought up to date.
+                                    checkpointPublisher.publish(this, getLatestReplicationCheckpoint());
+                                }
+                                postActivatePrimaryMode();
+                            } else {
+                                replicationTracker.activatePrimaryMode(getLocalCheckpoint());
                             }
-                            postActivatePrimaryMode();
                             /*
                              * If this shard was serving as a replica shard when another shard was promoted to primary then
                              * its Lucene index was reset during the primary term transition. In particular, the Lucene index
@@ -957,6 +991,12 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
                             engine.translogManager().rollTranslogGeneration();
                             engine.fillSeqNoGaps(newPrimaryTerm);
                             replicationTracker.updateLocalCheckpoint(currentRouting.allocationId().getId(), getLocalCheckpoint());
+                            // DFA warm primaries: skip resync — read-only engine has no translog
+                            // to replay, and replicas recover from remote store.
+                            if (getIndexer() instanceof DataFormatAwareReadOnlyEngine) {
+                                primaryReplicaResyncInProgress.compareAndSet(true, false);
+                                return;
+                            }
                             primaryReplicaSyncer.accept(this, new ActionListener<ResyncTask>() {
                                 @Override
                                 public void onResponse(ResyncTask resyncTask) {
@@ -4178,7 +4218,11 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
         synchronized (mutex) {
             replicationTracker.activateWithPrimaryContext(primaryContext); // make changes to primaryMode flag only under mutex
         }
-        postActivatePrimaryMode();
+        // DFA warm primaries: skip postActivatePrimaryMode (no retention leases, no remote
+        // translog upload). Primary mode is activated via primaryContext so initiateTracking works.
+        if (getIndexer() instanceof DataFormatAwareReadOnlyEngine == false) {
+            postActivatePrimaryMode();
+        }
     }
 
     private void postActivatePrimaryMode() {
