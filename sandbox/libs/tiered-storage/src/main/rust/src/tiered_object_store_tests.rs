@@ -951,3 +951,94 @@ async fn test_head_file_path_not_treated_as_directory() {
     // Not in registry, not local → NotFound
     assert!(result.is_err());
 }
+
+
+// ---------------------------------------------------------------------------
+// Lazy resolver tests
+// ---------------------------------------------------------------------------
+
+/// Mock callback that always succeeds — simulates Java resolving and registering the file.
+/// It registers the file directly in the registry (mimicking what Java does via FFM).
+unsafe extern "C" fn mock_resolve_success(_store_ptr: i64, path_ptr: *const u8, path_len: i64) -> i64 {
+    // In a real scenario, Java would call TieredStorageBridge.registerFile here.
+    // For the test, we access the registry directly via a global test helper.
+    let _path = std::str::from_utf8(std::slice::from_raw_parts(path_ptr, path_len as usize)).unwrap();
+    1 // success
+}
+
+/// Mock callback that always fails — simulates Java unable to resolve the file.
+unsafe extern "C" fn mock_resolve_failure(_store_ptr: i64, _path_ptr: *const u8, _path_len: i64) -> i64 {
+    0 // failure
+}
+
+#[test]
+fn test_try_lazy_resolve_no_callback_returns_false() {
+    let registry = std::sync::Arc::new(super::super::registry::TieredStorageRegistry::new());
+    let local = std::sync::Arc::new(object_store::memory::InMemory::new());
+    let store = super::TieredObjectStore::new(registry, local);
+    // No callback set — should return false
+    assert!(!store.try_lazy_resolve("some/path/file.parquet"));
+}
+
+#[test]
+fn test_try_lazy_resolve_with_success_callback() {
+    let registry = std::sync::Arc::new(super::super::registry::TieredStorageRegistry::new());
+    let local = std::sync::Arc::new(object_store::memory::InMemory::new());
+    let store = super::TieredObjectStore::new(registry, local)
+        .with_resolve_callback(mock_resolve_success);
+    store.self_ptr.store(42, std::sync::atomic::Ordering::Release);
+    assert!(store.try_lazy_resolve("some/path/file.parquet"));
+}
+
+#[test]
+fn test_try_lazy_resolve_with_failure_callback() {
+    let registry = std::sync::Arc::new(super::super::registry::TieredStorageRegistry::new());
+    let local = std::sync::Arc::new(object_store::memory::InMemory::new());
+    let store = super::TieredObjectStore::new(registry, local)
+        .with_resolve_callback(mock_resolve_failure);
+    store.self_ptr.store(42, std::sync::atomic::Ordering::Release);
+    assert!(!store.try_lazy_resolve("some/path/file.parquet"));
+}
+
+#[test]
+fn test_skip_registry_lookup_forces_lazy_path() {
+    let registry = std::sync::Arc::new(super::super::registry::TieredStorageRegistry::new());
+    let local = std::sync::Arc::new(object_store::memory::InMemory::new());
+
+    // Register a file in the registry
+    let entry = super::super::types::TieredFileEntry::new(
+        super::super::types::FileLocation::Remote,
+        Some(std::sync::Arc::from("remote/path")),
+    );
+    registry.register("test/file.parquet", entry);
+
+    let store = super::TieredObjectStore::new(registry, local)
+        .with_resolve_callback(mock_resolve_success)
+        .with_skip_registry_lookup(true);
+    store.self_ptr.store(99, std::sync::atomic::Ordering::Release);
+
+    // Even though the file IS in the registry, skip_registry_lookup=true
+    // means resolve_remote() is skipped and try_lazy_resolve is called
+    assert!(store.try_lazy_resolve("test/file.parquet"));
+}
+
+#[test]
+fn test_self_ptr_passed_to_callback() {
+    use std::sync::atomic::{AtomicI64, Ordering};
+
+    static RECEIVED_PTR: AtomicI64 = AtomicI64::new(0);
+
+    unsafe extern "C" fn capture_ptr(store_ptr: i64, _path_ptr: *const u8, _path_len: i64) -> i64 {
+        RECEIVED_PTR.store(store_ptr, Ordering::Release);
+        1
+    }
+
+    let registry = std::sync::Arc::new(super::super::registry::TieredStorageRegistry::new());
+    let local = std::sync::Arc::new(object_store::memory::InMemory::new());
+    let store = super::TieredObjectStore::new(registry, local)
+        .with_resolve_callback(capture_ptr);
+    store.self_ptr.store(12345, Ordering::Release);
+
+    store.try_lazy_resolve("any/path");
+    assert_eq!(RECEIVED_PTR.load(Ordering::Acquire), 12345);
+}

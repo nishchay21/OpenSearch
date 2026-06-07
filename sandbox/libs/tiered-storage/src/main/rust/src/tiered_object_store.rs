@@ -42,6 +42,25 @@ use crate::types::{FileLocation, TieredFileEntry};
 // TieredObjectStore
 // ---------------------------------------------------------------------------
 
+/// Upcall signature for the Java lazy file resolver.
+///
+/// When a file is not in the registry at query time, Rust calls this function
+/// pointer (which jumps into Java via FFM upcall stub). Java resolves the
+/// remote path from `RemoteSegmentStoreDirectory` metadata, calls
+/// `TieredStorageBridge.registerFile()` to populate the Rust registry, and
+/// returns 1 on success or 0 on failure.
+///
+/// Args: `(store_ptr: i64, path_ptr: *const u8, path_len: i64) -> i64`
+///   - `store_ptr`: the native store pointer (for Java to look up the correct resolver)
+///   - `path_ptr`/`path_len`: UTF-8 absolute file path that was not found
+///   - returns: 1 = file was resolved and registered, 0 = unresolvable
+///
+/// # Safety
+/// The function pointer must remain valid for the lifetime of the
+/// `TieredObjectStore`. Java ensures this by using `Arena.global()` for the
+/// upcall stub.
+pub type ResolveCallbackFn = unsafe extern "C" fn(i64, *const u8, i64) -> i64;
+
 /// ObjectStore implementation that routes reads between local and remote
 /// stores based on [`TieredStorageRegistry`] metadata.
 ///
@@ -53,6 +72,19 @@ pub struct TieredObjectStore {
     remote: std::sync::OnceLock<Arc<dyn ObjectStore>>,
     /// Optional node-level block cache. `None` on hot nodes or when disabled.
     cache: Option<Arc<dyn BlockCache>>,
+    /// Optional Java upcall for lazy file resolution on registry miss.
+    /// When set, called before falling through to local on a registry miss.
+    /// The callback resolves the remote path and registers the file in the
+    /// registry so the retry succeeds. `None` = disabled (no fallback).
+    resolve_cb: Option<ResolveCallbackFn>,
+    /// The raw pointer value of this store (set after Arc::into_raw in FFM).
+    /// Passed as the first argument to `resolve_cb` so Java can do O(1)
+    /// lookup in its RESOLVER_MAP.
+    pub(crate) self_ptr: std::sync::atomic::AtomicI64,
+    /// When true, skip the initial resolve_remote() check to force all reads
+    /// through the lazy resolver path. Useful for testing the upcall end-to-end.
+    /// Set via the 5th FFM parameter or `with_skip_registry_lookup(true)`.
+    pub(crate) skip_registry_lookup: bool,
 }
 
 impl TieredObjectStore {
@@ -65,6 +97,9 @@ impl TieredObjectStore {
             local,
             remote: std::sync::OnceLock::new(),
             cache: None,
+            resolve_cb: None,
+            self_ptr: std::sync::atomic::AtomicI64::new(0),
+            skip_registry_lookup: false,
         }
     }
 
@@ -84,6 +119,62 @@ impl TieredObjectStore {
     pub fn with_cache(mut self, cache: Arc<dyn BlockCache>) -> Self {
         self.cache = Some(cache);
         self
+    }
+
+    /// Attach a lazy file resolver callback (Java upcall).
+    ///
+    /// When a file is not in the registry at read time, the store calls this
+    /// function pointer before falling through to the local filesystem. The
+    /// callback (Java side) resolves the remote path from
+    /// `RemoteSegmentStoreDirectory` metadata and registers the file in the
+    /// Rust registry. On success (return 1), `resolve_remote()` is retried.
+    ///
+    /// # Safety
+    /// The callback must remain valid for the lifetime of the store.
+    #[must_use]
+    pub fn with_resolve_callback(mut self, cb: ResolveCallbackFn) -> Self {
+        self.resolve_cb = Some(cb);
+        self
+    }
+
+    /// Test/debug: skip the initial registry lookup to force all reads through
+    /// the lazy resolver. Useful for verifying the upcall path works end-to-end.
+    /// Pass `skip_registry_lookup=1` in the FFM call to enable.
+    #[must_use]
+    pub fn with_skip_registry_lookup(mut self, skip: bool) -> Self {
+        self.skip_registry_lookup = skip;
+        self
+    }
+
+    /// Try to lazily resolve a file via the Java upcall.
+    ///
+    /// Called on registry miss. If a callback is registered, invokes it with
+    /// the path. Java resolves the remote path, registers the file in the
+    /// registry, and returns 1. On success, the caller should retry
+    /// `resolve_remote()`.
+    ///
+    /// Returns `true` if the file was resolved and registered.
+    fn try_lazy_resolve(&self, path_str: &str) -> bool {
+        let cb = match self.resolve_cb {
+            Some(cb) => cb,
+            None => return false,
+        };
+        let store_ptr = self.self_ptr.load(std::sync::atomic::Ordering::Acquire);
+        let bytes = path_str.as_bytes();
+        let result = unsafe { cb(store_ptr, bytes.as_ptr(), bytes.len() as i64) };
+        if result > 0 {
+            native_bridge_common::log_info!(
+                "TieredObjectStore: lazy_resolve SUCCEEDED path='{}'",
+                path_str
+            );
+            true
+        } else {
+            native_bridge_common::log_info!(
+                "TieredObjectStore: lazy_resolve FAILED path='{}'",
+                path_str
+            );
+            false
+        }
     }
 
     /// Evict all cache entries whose key starts with `path`.
@@ -402,13 +493,25 @@ impl ObjectStore for TieredObjectStore {
             }
         }
 
+        // Normal path: check registry for remote routing.
+        // When skip_registry_lookup is true, skip this to force the lazy resolver path.
+        if !self.skip_registry_lookup {
+            if let Some((rp, store)) = self.resolve_remote(path_str) {
+                native_bridge_common::log_debug!(
+                    "TieredObjectStore: get_opts REMOTE path='{}'",
+                    path_str
+                );
+                return store.get_opts(&rp, options).await;
+            }
+        }
 
-        if let Some((rp, store)) = self.resolve_remote(path_str) {
-            native_bridge_common::log_debug!(
-                "TieredObjectStore: get_opts REMOTE path='{}'",
-                path_str
-            );
-            return store.get_opts(&rp, options).await;
+        // Registry miss — try lazy resolve via Java upcall before falling to local.
+        // The callback resolves the remote path from RemoteSegmentStoreDirectory metadata
+        // and registers the file. On success, retry from registry.
+        if self.try_lazy_resolve(path_str) {
+            if let Some((rp, store)) = self.resolve_remote(path_str) {
+                return store.get_opts(&rp, options).await;
+            }
         }
 
 
