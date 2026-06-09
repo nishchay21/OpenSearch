@@ -452,6 +452,17 @@ public class DataFormatAwareEngine implements Indexer {
                 engineConfig.getThreadPool()
             );
 
+            // Freeze engine and merge scheduler on construction if tiering is already in progress.
+            // Covers node restart / shard relocation where onSettingsChanged hasn't fired yet.
+            String tieringStateOnOpen = engineConfig.getIndexSettings().getSettings()
+                .get(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.HOT.name());
+            if (IndexModule.TieringState.PREPARING.name().equals(tieringStateOnOpen)
+                || IndexModule.TieringState.HOT_TO_WARM.name().equals(tieringStateOnOpen)) {
+                frozenForTiering = true;
+                mergeScheduler.freeze();
+                logger.info("Engine opened with tiering state [{}] — frozen on construction", tieringStateOnOpen);
+            }
+
             success = true;
             logger.trace("created new DataFormatBasedEngine");
         } catch (IOException | TranslogCorruptedException e) {
@@ -871,7 +882,7 @@ public class DataFormatAwareEngine implements Indexer {
     @Override
     public void refresh(String source) throws EngineException {
         final long refreshStartNanos = System.nanoTime();
-        if (isFrozenForTiering() && !PREPARE_TIERING_SOURCE.equals(source)) {
+        if (isFrozenForTiering() && !PREPARE_TIERING_SOURCE.equals(source) && !"flush".equals(source)) {
             return;
         }
         final long localCheckpointBeforeRefresh = localCheckpointTracker.getProcessedCheckpoint();
@@ -1311,9 +1322,18 @@ public class DataFormatAwareEngine implements Indexer {
 
     /**
      * Returns true if the engine is frozen for tiering and the given operation should be blocked.
+     * Checks both the cached flag (set by onSettingsChanged) and the live index settings
+     * (covers node restart / shard relocation where onSettingsChanged hasn't fired yet).
      */
     private boolean isFrozenForTiering() {
-        return frozenForTiering;
+        if (frozenForTiering) {
+            return true;
+        }
+        // Fallback: read live settings — covers fresh engine on a new node mid-tiering
+        String state = engineConfig.getIndexSettings().getSettings()
+            .get(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.HOT.name());
+        return IndexModule.TieringState.PREPARING.name().equals(state)
+            || IndexModule.TieringState.HOT_TO_WARM.name().equals(state);
     }
 
     /**

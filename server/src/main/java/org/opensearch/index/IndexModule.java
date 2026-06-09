@@ -658,10 +658,10 @@ public final class IndexModule {
     @ExperimentalApi
     public enum TieringState {
         HOT,
-        PREPARING,
         HOT_TO_WARM,
         WARM,
-        WARM_TO_HOT;
+        WARM_TO_HOT,
+        PREPARING;
     }
 
     @Deprecated(forRemoval = true)

@@ -470,6 +470,13 @@ public abstract class RecoverySourceHandler {
                 // segment files on the target node, using the existing files on
                 // the source node
                 final Store.RecoveryDiff diff = recoverySourceMetadata.recoveryDiff(request.metadataSnapshot());
+                logger.info(
+                    "[DFA-TIERING-DEBUG] recovery [phase1] shardId={} diff: identical={} different={} missing={}",
+                    request.shardId(),
+                    diff.identical.size(),
+                    diff.different.size(),
+                    diff.missing.size()
+                );
                 for (StoreFileMetadata md : diff.identical) {
                     phase1ExistingFileNames.add(md.name());
                     phase1ExistingFileSizes.add(md.length());
@@ -489,14 +496,14 @@ public abstract class RecoverySourceHandler {
                 phase1Files.addAll(diff.missing);
                 for (StoreFileMetadata md : phase1Files) {
                     if (request.metadataSnapshot().asMap().containsKey(md.name())) {
-                        logger.trace(
-                            "recovery [phase1]: recovering [{}], exists in local store, but is different: remote [{}], local [{}]",
+                        logger.info(
+                            "[DFA-TIERING-DEBUG] recovery [phase1]: SENDING [{}], different: remote [{}], local [{}]",
                             md.name(),
                             request.metadataSnapshot().asMap().get(md.name()),
                             md
                         );
                     } else {
-                        logger.trace("recovery [phase1]: recovering [{}], does not exist in remote", md.name());
+                        logger.info("[DFA-TIERING-DEBUG] recovery [phase1]: SENDING [{}], does not exist on target", md.name());
                     }
                     phase1FileNames.add(md.name());
                     phase1FileSizes.add(md.length());

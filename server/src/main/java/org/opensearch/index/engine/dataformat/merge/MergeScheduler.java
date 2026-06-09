@@ -14,6 +14,7 @@ import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.common.logging.Loggers;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.index.shard.ShardId;
+import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.MergeSchedulerConfig;
 import org.opensearch.index.engine.dataformat.MergeResult;
@@ -51,6 +52,7 @@ public class MergeScheduler {
     private volatile int maxConcurrentMerges;
     private volatile int maxMergeCount;
     private final MergeSchedulerConfig mergeSchedulerConfig;
+    private final IndexSettings indexSettings;
     private final MergeStatsTracker mergeStatsTracker = new MergeStatsTracker();
 
     /** true if we should rate-limit writes for each merge */
@@ -85,6 +87,7 @@ public class MergeScheduler {
         this.onMergeFailureCleanup = onMergeFailureCleanup;
         this.threadPool = threadPool;
         logger = Loggers.getLogger(getClass(), shardId);
+        this.indexSettings = indexSettings;
         this.mergeSchedulerConfig = indexSettings.getMergeSchedulerConfig();
         refreshConfig();
     }
@@ -125,7 +128,7 @@ public class MergeScheduler {
             logger.warn("MergeScheduler is shutdown, ignoring merge trigger");
             return;
         }
-        if (frozen.get()) {
+        if (isFrozen()) {
             return;
         }
 
@@ -141,7 +144,7 @@ public class MergeScheduler {
      * @param maxNumSegment the maximum number of segments after the force merge
      */
     public void forceMerge(int maxNumSegment) throws IOException {
-        if (frozen.get()) {
+        if (isFrozen()) {
             logger.info("MergeScheduler is frozen for tiering, ignoring force merge");
             return;
         }
@@ -214,10 +217,17 @@ public class MergeScheduler {
     }
 
     /**
-     * Returns true if the merge scheduler is frozen.
+     * Returns true if the merge scheduler is frozen — either explicitly via {@link #freeze()}
+     * or because the index tiering state indicates preparation/migration is in progress.
      */
     public boolean isFrozen() {
-        return frozen.get();
+        if (frozen.get()) {
+            return true;
+        }
+        String state = indexSettings.getSettings()
+            .get(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.HOT.name());
+        return IndexModule.TieringState.PREPARING.name().equals(state)
+            || IndexModule.TieringState.HOT_TO_WARM.name().equals(state);
     }
 
     /**
@@ -255,7 +265,7 @@ public class MergeScheduler {
      * submitting each merge as a task to the thread pool.
      */
     private void executeMerge() {
-        if (frozen.get()) {
+        if (isFrozen()) {
             return;
         }
         while (activeMerges.get() < maxConcurrentMerges && mergeHandler.hasPendingMerges()) {
