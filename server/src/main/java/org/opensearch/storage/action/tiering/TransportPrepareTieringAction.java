@@ -148,10 +148,18 @@ public class TransportPrepareTieringAction extends TransportBroadcastByNodeActio
      */
     private void syncAndFlush(IndexShard indexShard, ShardRouting shardRouting) throws IOException {
         logger.trace("Syncing and flushing shard [{}]", shardRouting.shardId());
+
+        // Wait for any in-flight merges to complete before the final sync.
+        // The engine should already be frozen (INDEX_TIERING_STATE=HOT_TO_WARM blocks new merges),
+        // but in-flight merges started before the freeze may still be running.
+        indexShard.awaitPendingMerges();
+
         indexShard.sync();
         // Flush before refresh: committed segments_N must exist before waitForRemoteStoreSync uploads them.
         // Refreshing first would expose segments not yet committed — the remote store sync would miss them.
+        // force=true bypasses the freeze guard — this is the last flush ever for this engine.
         indexShard.flush(new FlushRequest().force(true).waitIfOngoing(true));
+        // "prepare_tiering" source bypasses the freeze guard — this is the last refresh ever.
         indexShard.refresh("prepare_tiering");
     }
 

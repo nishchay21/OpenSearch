@@ -31,6 +31,7 @@ import org.opensearch.common.util.io.IOUtils;
 import org.opensearch.core.common.unit.ByteSizeValue;
 import org.opensearch.core.index.AppendOnlyIndexOperationRetryException;
 import org.opensearch.core.index.shard.ShardId;
+import org.opensearch.index.IndexModule;
 import org.opensearch.index.VersionType;
 import org.opensearch.index.engine.dataformat.DataFormat;
 import org.opensearch.index.engine.dataformat.DataFormatRegistry;
@@ -189,6 +190,16 @@ public class DataFormatAwareEngine implements Indexer {
 
     // Merge
     private final MergeScheduler mergeScheduler;
+
+    /**
+     * When true, all catalog-mutating operations are blocked. Set when INDEX_TIERING_STATE
+     * transitions to PREPARING or HOT_TO_WARM; cleared on cancel (state returns to HOT).
+     * Only TransportPrepareTieringAction's forced flush and "prepare_tiering" refresh bypass this.
+     */
+    private volatile boolean frozenForTiering = false;
+
+    /** Source label used by TransportPrepareTieringAction's refresh — bypasses freeze. */
+    private static final String PREPARE_TIERING_SOURCE = "prepare_tiering";
 
     // TODO Refactor these flush managing activities into FlushManager.
 
@@ -860,6 +871,9 @@ public class DataFormatAwareEngine implements Indexer {
     @Override
     public void refresh(String source) throws EngineException {
         final long refreshStartNanos = System.nanoTime();
+        if (isFrozenForTiering() && !PREPARE_TIERING_SOURCE.equals(source)) {
+            return;
+        }
         final long localCheckpointBeforeRefresh = localCheckpointTracker.getProcessedCheckpoint();
         boolean refreshed = false;
         List<Closeable> toClose = new ArrayList<>();
@@ -1055,6 +1069,9 @@ public class DataFormatAwareEngine implements Indexer {
     @Override
     public void flush(boolean force, boolean waitIfOngoing) throws EngineException {
         ensureOpen();
+        if (isFrozenForTiering() && !force) {
+            return;
+        }
         if (force && waitIfOngoing == false) {
             throw new IllegalArgumentException(
                 "wait_if_ongoing must be true for a force flush: force=" + force + " wait_if_ongoing=" + waitIfOngoing
@@ -1200,6 +1217,10 @@ public class DataFormatAwareEngine implements Indexer {
         boolean upgradeOnlyAncientSegments,
         String forceMergeUUID
     ) throws EngineException, IOException {
+        if (isFrozenForTiering()) {
+            logger.debug("forceMerge blocked — engine is frozen for tiering");
+            return;
+        }
         mergeScheduler.forceMerge(1);
     }
 
@@ -1258,6 +1279,27 @@ public class DataFormatAwareEngine implements Indexer {
 
         // This checks if the settings related to merge are changed and based on that updates the local variables in the class
         mergeScheduler.refreshConfig();
+
+        // Detect tiering state transitions to freeze/unfreeze the engine
+        String tieringStateStr = engineConfig.getIndexSettings()
+            .getSettings()
+            .get(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.HOT.name());
+        boolean shouldFreeze;
+        try {
+            IndexModule.TieringState tieringState = IndexModule.TieringState.valueOf(tieringStateStr);
+            shouldFreeze = tieringState == IndexModule.TieringState.PREPARING || tieringState == IndexModule.TieringState.HOT_TO_WARM;
+        } catch (IllegalArgumentException e) {
+            shouldFreeze = false;
+        }
+        if (shouldFreeze && !frozenForTiering) {
+            logger.info("Freezing engine for tiering — blocking merges, refresh, flush, and catalog commits");
+            frozenForTiering = true;
+            mergeScheduler.freeze();
+        } else if (!shouldFreeze && frozenForTiering) {
+            logger.info("Unfreezing engine — tiering cancelled, resuming normal operations");
+            frozenForTiering = false;
+            mergeScheduler.unfreeze();
+        }
     }
 
     /** {@inheritDoc} Always returns {@code true} — a refresh is always considered needed. */
@@ -1265,6 +1307,22 @@ public class DataFormatAwareEngine implements Indexer {
     public boolean refreshNeeded() {
         // A refresh is needed if there are operations since the last refresh
         return true;
+    }
+
+    /**
+     * Returns true if the engine is frozen for tiering and the given operation should be blocked.
+     */
+    private boolean isFrozenForTiering() {
+        return frozenForTiering;
+    }
+
+    /**
+     * Waits for all in-flight merge operations to complete. Used by
+     * TransportPrepareTieringAction to ensure merge results are in the catalog
+     * before the final sync-to-remote.
+     */
+    public void awaitPendingMerges() {
+        mergeScheduler.awaitPendingMerges();
     }
 
     /** {@inheritDoc} Delegates to {@link #refresh(String)} and always returns {@code true}. */
@@ -1777,6 +1835,10 @@ public class DataFormatAwareEngine implements Indexer {
     }
 
     private void applyMergeChanges(MergeResult mergeResult, OneMerge oneMerge) {
+        if (isFrozenForTiering()) {
+            logger.warn("applyMergeChanges blocked — engine is frozen for tiering, discarding merge result");
+            return;
+        }
         assert mergeResult != null : "merge result must not be null";
         assert oneMerge != null : "oneMerge must not be null";
         assert oneMerge.getSegmentsToMerge().isEmpty() == false : "merged segments list must not be empty";
@@ -1810,6 +1872,9 @@ public class DataFormatAwareEngine implements Indexer {
     private void triggerPossibleMerges() {
         if (Booleans.parseBoolean(System.getProperty(MERGE_ENABLED_PROPERTY, Boolean.TRUE.toString())) == false) {
             logger.debug("Pluggable dataformat merge is disabled via system property [{}], skipping merge", MERGE_ENABLED_PROPERTY);
+            return;
+        }
+        if (isFrozenForTiering()) {
             return;
         }
         mergeScheduler.triggerMerges();

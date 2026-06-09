@@ -25,6 +25,7 @@ import org.opensearch.common.inject.Inject;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.index.Index;
+import org.opensearch.index.IndexModule;
 import org.opensearch.storage.common.tiering.TieringUtils;
 import org.opensearch.storage.tiering.HotToWarmTieringService;
 import org.opensearch.threadpool.ThreadPool;
@@ -126,7 +127,8 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
                     // DiskThresholdMonitor (unlike read_only_allow_delete) so it is sufficient alone.
                     Settings.Builder indexSettingsBuilder = Settings.builder()
                         .put(indexMetadata.getSettings())
-                        .put(IndexMetadata.INDEX_BLOCKS_WRITE_SETTING.getKey(), true);
+                        .put(IndexMetadata.INDEX_BLOCKS_WRITE_SETTING.getKey(), true)
+                        .put(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.PREPARING.name());
 
                     IndexMetadata.Builder indexMetadataBuilder = IndexMetadata.builder(indexMetadata)
                         .settings(indexSettingsBuilder)

@@ -45,6 +45,7 @@ import static org.opensearch.cluster.metadata.IndexMetadata.SETTING_REMOTE_STORE
 import static org.opensearch.index.IndexModule.INDEX_TIERING_STATE;
 import static org.opensearch.index.IndexModule.TieringState.HOT;
 import static org.opensearch.index.IndexModule.TieringState.HOT_TO_WARM;
+import static org.opensearch.index.IndexModule.TieringState.PREPARING;
 import static org.opensearch.index.IndexModule.TieringState.WARM;
 import static org.opensearch.index.IndexModule.TieringState.WARM_TO_HOT;
 import static org.opensearch.storage.common.tiering.TieringUtils.isCCRFollowerIndex;
@@ -77,8 +78,10 @@ public class TieringServiceValidator {
     ) {
         final String indexState = state.getMetadata().getIndexSafe(index).getSettings().get(INDEX_TIERING_STATE.getKey(), HOT.toString());
         boolean isCurrentStateValid = true;
-        if (currentTieringType.equals(HOT_TO_WARM) && indexState.equals(IndexModule.TieringState.HOT.toString()) == false
-            || currentTieringType.equals(WARM_TO_HOT) && indexState.equals(IndexModule.TieringState.WARM.toString()) == false) {
+        if (currentTieringType.equals(HOT_TO_WARM)
+            && indexState.equals(HOT.toString()) == false
+            && indexState.equals(PREPARING.toString()) == false
+            || currentTieringType.equals(WARM_TO_HOT) && indexState.equals(WARM.toString()) == false) {
             isCurrentStateValid = false;
         }
         if (isCurrentStateValid == false) {

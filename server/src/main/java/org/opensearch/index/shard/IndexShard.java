@@ -1638,6 +1638,19 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
         return mergeStats;
     }
 
+    /**
+     * Waits for all in-flight merge operations to complete.
+     * Only effective when the engine is a {@link DataFormatAwareEngine}; otherwise a no-op.
+     * Used by TransportPrepareTieringAction to ensure merge results are in the catalog
+     * before the final sync-to-remote.
+     */
+    public void awaitPendingMerges() {
+        final Indexer engine = getIndexerOrNull();
+        if (engine instanceof DataFormatAwareEngine dfa) {
+            dfa.awaitPendingMerges();
+        }
+    }
+
     public SegmentsStats segmentStats(boolean includeSegmentFileSizes, boolean includeUnloadedSegments) {
         SegmentsStats segmentsStats = getIndexer().segmentsStats(includeSegmentFileSizes, includeUnloadedSegments);
         segmentsStats.addBitsetMemoryInBytes(shardBitsetFilterCache.getMemorySizeInBytes());
