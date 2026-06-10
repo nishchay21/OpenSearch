@@ -45,6 +45,7 @@ import static org.opensearch.cluster.metadata.IndexMetadata.SETTING_REMOTE_STORE
 import static org.opensearch.index.IndexModule.INDEX_TIERING_STATE;
 import static org.opensearch.index.IndexModule.TieringState.HOT;
 import static org.opensearch.index.IndexModule.TieringState.HOT_TO_WARM;
+import static org.opensearch.index.IndexModule.TieringState.PREPARING;
 import static org.opensearch.index.IndexModule.TieringState.WARM;
 import static org.opensearch.index.IndexModule.TieringState.WARM_TO_HOT;
 import static org.opensearch.storage.common.tiering.TieringUtils.isCCRFollowerIndex;
@@ -60,15 +61,12 @@ public class TieringServiceValidator {
     private static final long DEFAULT_FALLBACK_SHARD_SIZE = 0L;
 
     /**
-     * Validates that the specified index is in the required initial tiering state.
-     * Validation on the final tiering state is done by before calling this validation.
+     * Validates that the specified index is in the required initial tiering state for the requested
+     * operation. Validation of the final tiering state is performed before calling this method.
      *
      * @param state the current cluster state
      * @param index the index to be validated
-     * @param currentTieringType tiering type
-     */
-    /**
-     * Validates that the index is in the correct initial state for the requested tiering operation.
+     * @param currentTieringType the requested tiering transition
      */
     private static void validateIndexCurrentState(
         final ClusterState state,
@@ -77,8 +75,10 @@ public class TieringServiceValidator {
     ) {
         final String indexState = state.getMetadata().getIndexSafe(index).getSettings().get(INDEX_TIERING_STATE.getKey(), HOT.toString());
         boolean isCurrentStateValid = true;
-        if (currentTieringType.equals(HOT_TO_WARM) && indexState.equals(IndexModule.TieringState.HOT.toString()) == false
-            || currentTieringType.equals(WARM_TO_HOT) && indexState.equals(IndexModule.TieringState.WARM.toString()) == false) {
+        if ((currentTieringType.equals(HOT_TO_WARM)
+            && indexState.equals(HOT.toString()) == false
+            && indexState.equals(PREPARING.toString()) == false)
+            || (currentTieringType.equals(WARM_TO_HOT) && indexState.equals(WARM.toString()) == false)) {
             isCurrentStateValid = false;
         }
         if (isCurrentStateValid == false) {
@@ -96,9 +96,6 @@ public class TieringServiceValidator {
         }
     }
 
-    /**
-     * Performs common validations for tiering operations.
-     */
     /**
      * Performs common validations applicable to all tiering operations.
      */

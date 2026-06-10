@@ -143,15 +143,31 @@ public class TransportPrepareTieringAction extends TransportBroadcastByNodeActio
     }
 
     /**
-     * Syncs translog to remote store, then flushes all data to segments and refreshes.
-     * After this method, all indexed data is in segments on disk and visible to readers.
+     * Freezes the engine, syncs the translog for durability, then flushes all data to committed
+     * segments and refreshes. After this method, all indexed data is committed to segments on disk
+     * and visible to readers. The subsequent upload to the remote store is handled separately by
+     * {@link #waitForRemoteSync}.
      */
     private void syncAndFlush(IndexShard indexShard, ShardRouting shardRouting) throws IOException {
         logger.trace("Syncing and flushing shard [{}]", shardRouting.shardId());
+
+        // Freeze the engine before the final sync. Closes the race window where the cluster-state
+        // update setting INDEX_TIERING_STATE=PREPARING has not yet propagated to this data node.
+        // After this, no new merges can start and any merge results that arrive late are discarded.
+        // No-op if the engine was already frozen via onSettingsChanged.
+        indexShard.freezeForTiering();
+
+        // freezeForTiering() already drains in-flight merges; this guards the narrow window where a
+        // merge was submitted concurrently with the freeze. Once frozen, the flush()/refresh() below
+        // cannot start new merges, so a single drain here is sufficient.
+        indexShard.awaitPendingMerges();
+
         indexShard.sync();
         // Flush before refresh: committed segments_N must exist before waitForRemoteStoreSync uploads them.
         // Refreshing first would expose segments not yet committed — the remote store sync would miss them.
+        // force=true bypasses the freeze guard — this is the last flush ever for this engine.
         indexShard.flush(new FlushRequest().force(true).waitIfOngoing(true));
+        // "prepare_tiering" source bypasses the freeze guard — this is the last refresh ever.
         indexShard.refresh("prepare_tiering");
     }
 

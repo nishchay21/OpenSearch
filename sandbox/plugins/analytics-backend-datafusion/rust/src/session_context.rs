@@ -157,6 +157,7 @@ pub async unsafe fn create_session_context(
     );
 
     let mut runtime_env_builder = RuntimeEnvBuilder::from_runtime_env(&runtime.runtime_env)
+        .with_object_store_registry(Arc::new(datafusion::execution::object_store::DefaultObjectStoreRegistry::new()))
         .with_cache_manager(
             CacheManagerConfig::default()
                 .with_list_files_cache(Some(list_file_cache))

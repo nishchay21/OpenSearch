@@ -1638,6 +1638,20 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
         return mergeStats;
     }
 
+    /**
+     * Blocks until all in-flight merge operations on this shard have completed.
+     *
+     * <p>Guarantees that the results of any ongoing merges are reflected in the shard's segment
+     * state before subsequent operations observe it. A no-op for engines that do not support
+     * merge-aware tiering.
+     */
+    public void awaitPendingMerges() {
+        final Indexer engine = getIndexerOrNull();
+        if (engine instanceof DataFormatAwareEngine dfa) {
+            dfa.awaitPendingMerges();
+        }
+    }
+
     public SegmentsStats segmentStats(boolean includeSegmentFileSizes, boolean includeUnloadedSegments) {
         SegmentsStats segmentsStats = getIndexer().segmentsStats(includeSegmentFileSizes, includeUnloadedSegments);
         segmentsStats.addBitsetMemoryInBytes(shardBitsetFilterCache.getMemorySizeInBytes());
@@ -6379,5 +6393,21 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
     @Deprecated
     public void setCompositeEngine(DataFormatAwareEngine unused) {
         throw new UnsupportedOperationException();
+    }
+
+    /**
+     * Freezes this shard's engine in preparation for tiering.
+     *
+     * <p>Once frozen, no new merges can start, any in-flight merges are drained to completion, and
+     * late-arriving merge results are discarded, leaving the shard's segment state stable for
+     * tiering. Calling this explicitly makes the frozen state independent of cluster-state
+     * propagation timing. The operation is idempotent and is a no-op for engines that do not
+     * support tiering.
+     */
+    public void freezeForTiering() {
+        final Indexer engine = getIndexerOrNull();
+        if (engine instanceof DataFormatAwareEngine dfa) {
+            dfa.freezeForTiering();
+        }
     }
 }

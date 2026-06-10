@@ -660,7 +660,8 @@ public final class IndexModule {
         HOT,
         HOT_TO_WARM,
         WARM,
-        WARM_TO_HOT;
+        WARM_TO_HOT,
+        PREPARING;
     }
 
     @Deprecated(forRemoval = true)

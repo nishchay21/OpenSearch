@@ -25,6 +25,7 @@ import org.opensearch.common.inject.Inject;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.index.Index;
+import org.opensearch.index.IndexModule;
 import org.opensearch.storage.common.tiering.TieringUtils;
 import org.opensearch.storage.tiering.HotToWarmTieringService;
 import org.opensearch.threadpool.ThreadPool;
@@ -107,9 +108,11 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
     }
 
     /**
-     * Step 1: Add a write block on the DFA index to prevent new writes during prepare.
-     * Using the setting (not ClusterBlocks API) ensures the block is persisted in index metadata and can be
-     * cleanly removed on cancel or failure.
+     * Step 1: Mark the DFA index as {@code PREPARING} and add a write block to prevent new writes during prepare.
+     * Both the {@code blocks.write} index setting and the {@link IndexMetadata#INDEX_WRITE_BLOCK} cluster block are
+     * applied: the setting persists the block in index metadata (so it survives and can be cleanly reverted on
+     * cancel or failure), while the cluster block enforces it immediately. The {@code PREPARING} tiering state
+     * freezes the engine (blocks merges/refresh/flush) for the duration of prepare.
      * On success, proceeds to step 2 (prepare tiering).
      */
     private void addWriteBlockAndPrepare(IndexTieringRequest request, ClusterState state, ActionListener<AcknowledgedResponse> listener) {
@@ -122,11 +125,14 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
                     if (indexMetadata == null) {
                         throw new IllegalStateException("Index [" + request.getIndex() + "] not found");
                     }
-                    // Block writes before pre-tiering sync. blocks.write cannot be auto-removed by
-                    // DiskThresholdMonitor (unlike read_only_allow_delete) so it is sufficient alone.
+                    // Block writes before pre-tiering sync. Both the blocks.write setting and the
+                    // INDEX_WRITE_BLOCK cluster block are applied: the setting persists in index metadata
+                    // (and, unlike read_only_allow_delete, cannot be auto-removed by DiskThresholdMonitor),
+                    // while the cluster block enforces the block immediately. PREPARING freezes the engine.
                     Settings.Builder indexSettingsBuilder = Settings.builder()
                         .put(indexMetadata.getSettings())
-                        .put(IndexMetadata.INDEX_BLOCKS_WRITE_SETTING.getKey(), true);
+                        .put(IndexMetadata.INDEX_BLOCKS_WRITE_SETTING.getKey(), true)
+                        .put(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.PREPARING.name());
 
                     IndexMetadata.Builder indexMetadataBuilder = IndexMetadata.builder(indexMetadata)
                         .settings(indexSettingsBuilder)
@@ -147,7 +153,7 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
 
                 @Override
                 public void onFailure(String source, Exception e) {
-                    logger.error("Failed to add write block for index [{}]", request.getIndex());
+                    logger.error(() -> "Failed to add write block for index [" + request.getIndex() + "]", e);
                     listener.onFailure(
                         new IllegalStateException("Failed to add write block for DFA index [" + request.getIndex() + "]. Please retry.", e)
                     );
@@ -160,7 +166,8 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
      * Step 2: Execute the prepare tiering action (flush + refresh + waitForRemoteStoreSync) on primary shards.
      * Retries up to MAX_PREPARE_RETRIES times on shard failures before giving up.
      * On success, proceeds to step 3 (tier).
-     * On final failure, removes the write block to avoid leaving the index in a stuck state.
+     * On final failure, rolls back the PREPARING state (removes the write block and resets the tiering
+     * state to HOT) to avoid leaving the index in a stuck, write-blocked, frozen state.
      */
     private void executePrepareTiering(
         IndexTieringRequest request,
@@ -194,7 +201,7 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
                         + broadcastResponse.getFailedShards()
                         + " shard(s) failed. Please retry the tiering request.";
                     logger.error(errorMsg);
-                    removeWriteBlock(request.getIndex());
+                    rollbackPreparing(request.getIndex());
                     listener.onFailure(new IllegalStateException(errorMsg));
                     return;
                 }
@@ -202,7 +209,7 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
                 try {
                     TransportHotToWarmTierAction.super.clusterManagerOperation(request, state, listener);
                 } catch (Exception e) {
-                    removeWriteBlock(request.getIndex());
+                    rollbackPreparing(request.getIndex());
                     listener.onFailure(e);
                 }
             }
@@ -226,20 +233,24 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
                     + MAX_PREPARE_RETRIES
                     + " attempts. Please retry.";
                 logger.error(errorMsg, e);
-                removeWriteBlock(request.getIndex());
+                rollbackPreparing(request.getIndex());
                 listener.onFailure(new IllegalStateException(errorMsg, e));
             }
         });
     }
 
     /**
-     * Removes the write block from the index.
-     * Called on prepare failure to avoid leaving the index in a stuck write-blocked state.
-     * Best-effort — if this fails, the user can manually remove the block via index settings.
+     * Rolls back the {@code PREPARING} transition on prepare failure: removes the write block and, if the index
+     * is still in {@code PREPARING}, resets the tiering state back to {@code HOT} so the engine unfreezes and
+     * normal indexing/merges resume. The tiering state is only reset when still {@code PREPARING} to avoid
+     * clobbering a state that already advanced to {@code HOT_TO_WARM} (e.g. when {@code tier()} partially
+     * succeeded before throwing).
+     * Best-effort — if this fails, the index may remain write-blocked and/or frozen in {@code PREPARING};
+     * both can be reverted manually via index settings.
      */
-    private void removeWriteBlock(String indexName) {
+    private void rollbackPreparing(String indexName) {
         clusterService.submitStateUpdateTask(
-            "remove-write-block-for-tiering [" + indexName + "]",
+            "rollback-preparing-for-tiering [" + indexName + "]",
             new ClusterStateUpdateTask(Priority.URGENT) {
                 @Override
                 public ClusterState execute(ClusterState currentState) {
@@ -250,6 +261,14 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
                     Settings.Builder indexSettingsBuilder = Settings.builder()
                         .put(indexMetadata.getSettings())
                         .put(IndexMetadata.INDEX_BLOCKS_WRITE_SETTING.getKey(), false);
+
+                    // Only revert the tiering state if it is still PREPARING. If tier() already advanced it to
+                    // HOT_TO_WARM, leave it untouched so we don't corrupt a partially-succeeded migration.
+                    String currentTieringState = indexMetadata.getSettings()
+                        .get(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.HOT.name());
+                    if (IndexModule.TieringState.PREPARING.name().equals(currentTieringState)) {
+                        indexSettingsBuilder.put(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.HOT.name());
+                    }
 
                     IndexMetadata.Builder indexMetadataBuilder = IndexMetadata.builder(indexMetadata)
                         .settings(indexSettingsBuilder)
@@ -265,16 +284,17 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
                 @Override
                 public void onFailure(String source, Exception e) {
                     logger.warn(
-                        "Failed to remove write block for index [{}] after tiering failure: {}. "
-                            + "Block can be removed manually via index settings.",
-                        indexName,
+                        () -> "Failed to roll back PREPARING state for index ["
+                            + indexName
+                            + "] after tiering failure. The write block and/or PREPARING tiering state may "
+                            + "need to be reverted manually via index settings.",
                         e
                     );
                 }
 
                 @Override
                 public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
-                    logger.info("Write block removed for index [{}] after tiering failure", indexName);
+                    logger.info("Rolled back PREPARING state (removed write block, reset tiering state) for index [{}]", indexName);
                 }
             }
         );
