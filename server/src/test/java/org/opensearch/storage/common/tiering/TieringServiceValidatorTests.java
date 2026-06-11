@@ -51,6 +51,7 @@ import static org.opensearch.cluster.routing.allocation.DiskThresholdSettings.CL
 import static org.opensearch.cluster.routing.allocation.DiskThresholdSettings.CLUSTER_ROUTING_ALLOCATION_LOW_DISK_WATERMARK_SETTING;
 import static org.opensearch.index.IndexModule.INDEX_TIERING_STATE;
 import static org.opensearch.index.IndexModule.TieringState.HOT_TO_WARM;
+import static org.opensearch.index.IndexModule.TieringState.PREPARING;
 import static org.opensearch.index.IndexModule.TieringState.WARM;
 import static org.opensearch.storage.common.tiering.TieringServiceValidator.validateEligibleHotNodesCapacity;
 import static org.opensearch.storage.common.tiering.TieringUtils.Tier.HOT;
@@ -115,6 +116,15 @@ public class TieringServiceValidatorTests extends OpenSearchTestCase {
                 shardLimitValidator
             )
         );
+    }
+
+    public void testValidateCommon_HotToWarmFromPreparing_Succeeds() {
+        // PREPARING is a valid starting state for a HOT_TO_WARM migration. This is what allows the
+        // second validation pass (run inside TieringService.tier() after the prepare phase has set
+        // INDEX_TIERING_STATE=PREPARING) to succeed without rejecting its own in-flight transition.
+        setupClusterState(1, PREPARING.toString(), true);
+        setupClusterInfo(1, 100, 50, 10L, 50, 20);
+        TieringServiceValidator.validateCommon(clusterState, clusterInfo, testIndex, 2, 3, 99, WARM, HOT_TO_WARM, shardLimitValidator);
     }
 
     public void testValidateCommon_FailsWithMaxConcurrentRequestsBreached() {

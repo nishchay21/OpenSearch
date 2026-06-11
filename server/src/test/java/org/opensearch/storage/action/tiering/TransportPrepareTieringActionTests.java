@@ -119,6 +119,8 @@ public class TransportPrepareTieringActionTests extends OpenSearchTestCase {
             throw new IOException("Failed to acquire primary operation permits for shard [" + shardRouting.shardId() + "]", e);
         }
         try {
+            indexShard.freezeForTiering();
+            indexShard.awaitPendingMerges();
             indexShard.sync();
             indexShard.flush(new FlushRequest().force(true).waitIfOngoing(true));
             indexShard.refresh("prepare_tiering");
@@ -133,6 +135,23 @@ public class TransportPrepareTieringActionTests extends OpenSearchTestCase {
         } finally {
             permit.close();
         }
+    }
+
+    /**
+     * Verifies that the engine is frozen and in-flight merges are drained before the flush, so no
+     * merge mutates the catalog after the final refresh during tiering preparation.
+     */
+    public void testShardOperation_FreezesAndDrainsMergesBeforeFlush() throws IOException {
+        mockPermitAcquisitionSuccess();
+
+        executeShardOperation(mockIndexShard, primaryShardRouting);
+
+        InOrder inOrder = inOrder(mockIndexShard);
+        inOrder.verify(mockIndexShard).freezeForTiering();
+        inOrder.verify(mockIndexShard).awaitPendingMerges();
+        inOrder.verify(mockIndexShard).sync();
+        inOrder.verify(mockIndexShard).flush(any(FlushRequest.class));
+        inOrder.verify(mockIndexShard).refresh("prepare_tiering");
     }
 
     /**

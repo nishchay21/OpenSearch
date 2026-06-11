@@ -466,7 +466,8 @@ public class DataFormatAwareEngine implements Indexer {
 
             // Freeze engine and merge scheduler on construction if tiering is already in progress.
             // Covers node restart / shard relocation where onSettingsChanged hasn't fired yet.
-            String tieringStateOnOpen = engineConfig.getIndexSettings().getSettings()
+            String tieringStateOnOpen = engineConfig.getIndexSettings()
+                .getSettings()
                 .get(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.HOT.name());
             if (IndexModule.TieringState.PREPARING.name().equals(tieringStateOnOpen)
                 || IndexModule.TieringState.HOT_TO_WARM.name().equals(tieringStateOnOpen)) {
@@ -1319,8 +1320,11 @@ public class DataFormatAwareEngine implements Indexer {
             shouldFreeze = tieringState == IndexModule.TieringState.PREPARING || tieringState == IndexModule.TieringState.HOT_TO_WARM;
         } catch (IllegalArgumentException e) {
             // Unrecognized tiering-state value — treat as not frozen, but surface the misconfiguration.
-            logger.warn("Unrecognized {} value [{}]; treating engine as not frozen for tiering",
-                IndexModule.INDEX_TIERING_STATE.getKey(), tieringStateStr);
+            logger.warn(
+                "Unrecognized {} value [{}]; treating engine as not frozen for tiering",
+                IndexModule.INDEX_TIERING_STATE.getKey(),
+                tieringStateStr
+            );
             shouldFreeze = false;
         }
         if (shouldFreeze && !frozenForTiering) {
@@ -1358,10 +1362,10 @@ public class DataFormatAwareEngine implements Indexer {
             return true;
         }
         // Fallback: read live settings to close the apply-ordering gap described above.
-        String state = engineConfig.getIndexSettings().getSettings()
+        String state = engineConfig.getIndexSettings()
+            .getSettings()
             .get(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.HOT.name());
-        return IndexModule.TieringState.PREPARING.name().equals(state)
-            || IndexModule.TieringState.HOT_TO_WARM.name().equals(state);
+        return IndexModule.TieringState.PREPARING.name().equals(state) || IndexModule.TieringState.HOT_TO_WARM.name().equals(state);
     }
 
     /**

@@ -646,6 +646,32 @@ public class TieringServiceTests extends OpenSearchTestCase {
         assertThat(e.getMessage(), org.hamcrest.Matchers.containsString("deleted before tiering cancellation"));
     }
 
+    public void testValidateTieringCancelRequest_PreparingStateNotInMemory_Accepted() {
+        // Index is NOT tracked in the in-memory set (the PREPARING phase runs before tier() adds it),
+        // but its persisted tiering state is PREPARING. Cancel must accept it so a stuck/mid-prepare
+        // index can be rolled back.
+        Settings preparingSettings = Settings.builder()
+            .put(INDEX_NUMBER_OF_REPLICAS_SETTING.getKey(), 2)
+            .put(INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.PREPARING.toString())
+            .put(IndexMetadata.SETTING_VERSION_CREATED, Version.CURRENT)
+            .put(IndexMetadata.SETTING_INDEX_UUID, "uuid")
+            .put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1)
+            .build();
+        IndexMetadata preparingMeta = IndexMetadata.builder("test-index")
+            .settings(preparingSettings)
+            .numberOfShards(1)
+            .numberOfReplicas(2)
+            .build();
+
+        RoutingTable routingTable = mock(RoutingTable.class);
+        when(routingTable.hasIndex(testIndex)).thenReturn(true);
+        when(clusterState.routingTable()).thenReturn(routingTable);
+
+        assertFalse("Precondition: index must not be in the in-memory set", tieringService.isIndexBeingTiered(testIndex));
+        // Must not throw.
+        tieringService.validateTieringCancelRequest(testIndex, preparingMeta, clusterState);
+    }
+
     public void testCancelTiering_SubmitsClusterStateTask() {
         IndexNameExpressionResolver resolver = mock(IndexNameExpressionResolver.class);
         AllocationService allocationSvc = mock(AllocationService.class);

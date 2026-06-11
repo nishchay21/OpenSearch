@@ -224,10 +224,8 @@ public class MergeScheduler {
         if (frozen.get()) {
             return true;
         }
-        String state = indexSettings.getSettings()
-            .get(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.HOT.name());
-        return IndexModule.TieringState.PREPARING.name().equals(state)
-            || IndexModule.TieringState.HOT_TO_WARM.name().equals(state);
+        String state = indexSettings.getSettings().get(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.HOT.name());
+        return IndexModule.TieringState.PREPARING.name().equals(state) || IndexModule.TieringState.HOT_TO_WARM.name().equals(state);
     }
 
     /**

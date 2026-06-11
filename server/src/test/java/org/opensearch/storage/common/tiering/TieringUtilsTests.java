@@ -118,6 +118,15 @@ public class TieringUtilsTests extends OpenSearchTestCase {
         assertEquals(IndexModule.TieringState.HOT_TO_WARM, TieringUtils.getTieringStatefromIndexSettings(settings));
     }
 
+    public void testGetTieringStatefromIndexSettings_Preparing() {
+        // PREPARING is the prepare phase of a hot-to-warm migration, so it must map to HOT_TO_WARM
+        // rather than throwing — the tiering-status API reads this for indices that are mid-prepare.
+        org.opensearch.common.settings.Settings settings = org.opensearch.common.settings.Settings.builder()
+            .put(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.PREPARING.toString())
+            .build();
+        assertEquals(IndexModule.TieringState.HOT_TO_WARM, TieringUtils.getTieringStatefromIndexSettings(settings));
+    }
+
     public void testGetTieringStatefromIndexSettings_Default() {
         org.opensearch.common.settings.Settings settings = org.opensearch.common.settings.Settings.EMPTY;
         assertEquals(IndexModule.TieringState.WARM_TO_HOT, TieringUtils.getTieringStatefromIndexSettings(settings));

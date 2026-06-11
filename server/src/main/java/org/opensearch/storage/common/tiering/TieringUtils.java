@@ -218,6 +218,7 @@ public class TieringUtils {
         );
         switch (tieringState) {
             case HOT_TO_WARM:
+            case PREPARING:
             case WARM:
                 return HOT_TO_WARM;
             case HOT:
