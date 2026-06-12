@@ -451,18 +451,6 @@ public class DataFormatAwareEngine implements Indexer {
                 engineConfig.getIndexSettings(),
                 engineConfig.getThreadPool()
             );
-
-            // Freeze engine and merge scheduler on construction if tiering is already in progress.
-            // Covers node restart / shard relocation where onSettingsChanged hasn't fired yet.
-            String tieringStateOnOpen = engineConfig.getIndexSettings().getSettings()
-                .get(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.HOT.name());
-            if (IndexModule.TieringState.PREPARING.name().equals(tieringStateOnOpen)
-                || IndexModule.TieringState.HOT_TO_WARM.name().equals(tieringStateOnOpen)) {
-                frozenForTiering = true;
-                mergeScheduler.freeze();
-                logger.info("Engine opened with tiering state [{}] — frozen on construction", tieringStateOnOpen);
-            }
-
             success = true;
             logger.trace("created new DataFormatBasedEngine");
         } catch (IOException | TranslogCorruptedException e) {
@@ -567,6 +555,9 @@ public class DataFormatAwareEngine implements Indexer {
      */
     @Override
     public Engine.IndexResult index(Engine.Index index) throws IOException {
+        if (isFrozenForTiering() && index.origin() == Engine.Operation.Origin.PRIMARY) {
+            throw new IllegalStateException("Engine is frozen for tiering — index operations blocked");
+        }
         assert Objects.equals(index.uid().field(), IdFieldMapper.NAME) : index.uid().field();
         // DataFormatAwareEngine is the primary-side engine in a segment-replication cluster.
         // Replicas use a separate engine (analogous to NRTReplicationEngine) that consumes segments.
@@ -882,9 +873,6 @@ public class DataFormatAwareEngine implements Indexer {
     @Override
     public void refresh(String source) throws EngineException {
         final long refreshStartNanos = System.nanoTime();
-        if (isFrozenForTiering() && !PREPARE_TIERING_SOURCE.equals(source) && !"flush".equals(source)) {
-            return;
-        }
         final long localCheckpointBeforeRefresh = localCheckpointTracker.getProcessedCheckpoint();
         boolean refreshed = false;
         List<Closeable> toClose = new ArrayList<>();
@@ -1080,9 +1068,6 @@ public class DataFormatAwareEngine implements Indexer {
     @Override
     public void flush(boolean force, boolean waitIfOngoing) throws EngineException {
         ensureOpen();
-        if (isFrozenForTiering() && !force) {
-            return;
-        }
         if (force && waitIfOngoing == false) {
             throw new IllegalArgumentException(
                 "wait_if_ongoing must be true for a force flush: force=" + force + " wait_if_ongoing=" + waitIfOngoing
@@ -1291,16 +1276,28 @@ public class DataFormatAwareEngine implements Indexer {
         // This checks if the settings related to merge are changed and based on that updates the local variables in the class
         mergeScheduler.refreshConfig();
 
-        // Detect tiering state transitions to freeze/unfreeze the engine
+        // Detect tiering state transitions to freeze/unfreeze the engine.
+        // Only freeze for HOT_TO_WARM (actual data migration in progress).
+        // Do NOT freeze for PREPARING — that state is transient and the prepare action
+        // explicitly calls freezeForTiering() when it is ready. Freezing on PREPARING from
+        // onSettingsChanged causes a deadlock on restart: the engine freezes before the
+        // prepare action can acquire refreshLock for its forced flush.
+        //
+        // Unfreeze logic covers both cancel (HOT_TO_WARM → HOT) and prepare failure
+        // (PREPARING → HOT) to ensure merge scheduler resumes.
         String tieringStateStr = engineConfig.getIndexSettings()
             .getSettings()
             .get(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.HOT.name());
         boolean shouldFreeze;
+        boolean isTieringActive;
         try {
             IndexModule.TieringState tieringState = IndexModule.TieringState.valueOf(tieringStateStr);
-            shouldFreeze = tieringState == IndexModule.TieringState.PREPARING || tieringState == IndexModule.TieringState.HOT_TO_WARM;
+            shouldFreeze = tieringState == IndexModule.TieringState.HOT_TO_WARM;
+            isTieringActive = tieringState == IndexModule.TieringState.PREPARING
+                || tieringState == IndexModule.TieringState.HOT_TO_WARM;
         } catch (IllegalArgumentException e) {
             shouldFreeze = false;
+            isTieringActive = false;
         }
         if (shouldFreeze && !frozenForTiering) {
             logger.info("Freezing engine for tiering — blocking merges, refresh, flush, and catalog commits");
@@ -1309,6 +1306,12 @@ public class DataFormatAwareEngine implements Indexer {
         } else if (!shouldFreeze && frozenForTiering) {
             logger.info("Unfreezing engine — tiering cancelled, resuming normal operations");
             frozenForTiering = false;
+            mergeScheduler.unfreeze();
+        }
+        // Unfreeze merge scheduler when tiering is no longer active (PREPARING → HOT on cancel/failure).
+        // The merge scheduler may have been frozen by the constructor or by freezeForTiering() without
+        // setting frozenForTiering (PREPARING case). Ensure it's unblocked when state returns to HOT.
+        if (!isTieringActive && mergeScheduler.isFrozen()) {
             mergeScheduler.unfreeze();
         }
     }
@@ -1321,19 +1324,39 @@ public class DataFormatAwareEngine implements Indexer {
     }
 
     /**
+     * Explicitly freezes the engine for tiering. Called by TransportPrepareTieringAction
+     * to close the race window where the cluster state with PREPARING hasn't propagated
+     * to the data node yet. No-op if already frozen (idempotent).
+     *
+     * <p>After this call, no new merges can start, in-flight merges are drained,
+     * and applyMergeChanges will discard any late-arriving merge results.
+     */
+    public void freezeForTiering() {
+        if (frozenForTiering == false) {
+            frozenForTiering = true;
+            mergeScheduler.freeze(); // sets frozen flag + awaits in-flight merges
+            logger.info("Engine explicitly frozen for tiering by prepare action");
+        }
+    }
+
+    /**
      * Returns true if the engine is frozen for tiering and the given operation should be blocked.
-     * Checks both the cached flag (set by onSettingsChanged) and the live index settings
-     * (covers node restart / shard relocation where onSettingsChanged hasn't fired yet).
+     * Checks both the cached flag (set by freezeForTiering() or onSettingsChanged for HOT_TO_WARM)
+     * and the live index settings for HOT_TO_WARM state.
+     * <p>
+     * Does NOT consider PREPARING state as frozen — the prepare action freezes explicitly
+     * via {@link #freezeForTiering()} when ready. This avoids deadlocks on restart where
+     * the engine would freeze before the prepare action's forced flush can acquire refreshLock.
      */
     private boolean isFrozenForTiering() {
         if (frozenForTiering) {
             return true;
         }
-        // Fallback: read live settings — covers fresh engine on a new node mid-tiering
+        // Fallback: read live settings — covers fresh engine on a new node mid-tiering.
+        // Only HOT_TO_WARM counts here; PREPARING is handled by explicit freezeForTiering() call.
         String state = engineConfig.getIndexSettings().getSettings()
             .get(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.HOT.name());
-        return IndexModule.TieringState.PREPARING.name().equals(state)
-            || IndexModule.TieringState.HOT_TO_WARM.name().equals(state);
+        return IndexModule.TieringState.HOT_TO_WARM.name().equals(state);
     }
 
     /**
@@ -1855,10 +1878,6 @@ public class DataFormatAwareEngine implements Indexer {
     }
 
     private void applyMergeChanges(MergeResult mergeResult, OneMerge oneMerge) {
-        if (isFrozenForTiering()) {
-            logger.warn("applyMergeChanges blocked — engine is frozen for tiering, discarding merge result");
-            return;
-        }
         assert mergeResult != null : "merge result must not be null";
         assert oneMerge != null : "oneMerge must not be null";
         assert oneMerge.getSegmentsToMerge().isEmpty() == false : "merged segments list must not be empty";

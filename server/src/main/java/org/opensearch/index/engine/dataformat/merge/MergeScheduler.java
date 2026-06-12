@@ -218,7 +218,9 @@ public class MergeScheduler {
 
     /**
      * Returns true if the merge scheduler is frozen — either explicitly via {@link #freeze()}
-     * or because the index tiering state indicates preparation/migration is in progress.
+     * or because the index tiering state indicates preparation or migration is in progress.
+     * Both PREPARING and HOT_TO_WARM block merges to prevent catalog mutations that could
+     * race with the tiering sync or data migration.
      */
     public boolean isFrozen() {
         if (frozen.get()) {
@@ -234,7 +236,7 @@ public class MergeScheduler {
      * Blocks until all in-flight merge tasks complete.
      */
     public void awaitPendingMerges() {
-        while (activeMerges.get() > 0) {
+        while (activeMerges.get() > 0 || mergeHandler.hasPendingMerges()) {
             try {
                 Thread.sleep(100);
             } catch (InterruptedException e) {
@@ -265,9 +267,6 @@ public class MergeScheduler {
      * submitting each merge as a task to the thread pool.
      */
     private void executeMerge() {
-        if (isFrozen()) {
-            return;
-        }
         while (activeMerges.get() < maxConcurrentMerges && mergeHandler.hasPendingMerges()) {
             OneMerge oneMerge = mergeHandler.getNextMerge();
             if (oneMerge == null) {
