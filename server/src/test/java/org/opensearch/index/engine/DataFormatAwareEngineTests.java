@@ -3324,13 +3324,13 @@ public class DataFormatAwareEngineTests extends OpenSearchTestCase {
         }
     }
 
-    public void testOnSettingsChangedFreezesOnPreparing() throws IOException {
+    public void testOnSettingsChangedFreezesOnHotToWarm() throws IOException {
         try (DataFormatAwareEngine engine = createDFAEngine(store, createTempDir())) {
             engine.translogManager().recoverFromTranslog(ignore -> 0, engine.getProcessedLocalCheckpoint(), Long.MAX_VALUE);
             // Initially HOT — indexing works.
             engine.index(indexOp(createParsedDocWithInput("0", null)));
-            // Transition to PREPARING and notify — engine freezes.
-            setTieringStateSetting(engine, IndexModule.TieringState.PREPARING);
+            // Transition to HOT_TO_WARM and notify — engine freezes.
+            setTieringStateSetting(engine, IndexModule.TieringState.HOT_TO_WARM);
             notifySettingsChanged(engine);
             IllegalStateException e = expectThrows(
                 IllegalStateException.class,
@@ -3343,7 +3343,7 @@ public class DataFormatAwareEngineTests extends OpenSearchTestCase {
     public void testOnSettingsChangedUnfreezesOnReturnToHot() throws IOException {
         try (DataFormatAwareEngine engine = createDFAEngine(store, createTempDir())) {
             engine.translogManager().recoverFromTranslog(ignore -> 0, engine.getProcessedLocalCheckpoint(), Long.MAX_VALUE);
-            setTieringStateSetting(engine, IndexModule.TieringState.PREPARING);
+            setTieringStateSetting(engine, IndexModule.TieringState.HOT_TO_WARM);
             notifySettingsChanged(engine);
             expectThrows(IllegalStateException.class, () -> engine.index(indexOp(createParsedDocWithInput("0", null))));
             // Tiering cancelled — state returns to HOT, engine unfreezes and indexing resumes.
@@ -3357,9 +3357,9 @@ public class DataFormatAwareEngineTests extends OpenSearchTestCase {
     public void testIsFrozenForTieringLiveSettingsFallback() throws IOException {
         try (DataFormatAwareEngine engine = createDFAEngine(store, createTempDir())) {
             engine.translogManager().recoverFromTranslog(ignore -> 0, engine.getProcessedLocalCheckpoint(), Long.MAX_VALUE);
-            // Settings reflect PREPARING but onSettingsChanged has NOT been called (the cached flag is
+            // Settings reflect HOT_TO_WARM but onSettingsChanged has NOT been called (the cached flag is
             // still false). The live-settings fallback must still block the operation.
-            setTieringStateSetting(engine, IndexModule.TieringState.PREPARING);
+            setTieringStateSetting(engine, IndexModule.TieringState.HOT_TO_WARM);
             IllegalStateException e = expectThrows(
                 IllegalStateException.class,
                 () -> engine.index(indexOp(createParsedDocWithInput("0", null)))

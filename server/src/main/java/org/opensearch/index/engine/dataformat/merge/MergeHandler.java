@@ -193,8 +193,11 @@ public class MergeHandler {
      * @see MergeScheduler — the production caller that enforces this ordering via
      *      {@code applyMergeChanges.accept(mergeResult, oneMerge)} before this call
      */
-    public synchronized void onMergeFinished(OneMerge oneMerge) {
+    public synchronized void onMergeFinished(OneMerge oneMerge, boolean isFrozen) {
         removeMergingSegments(oneMerge);
+        if(isFrozen) {
+            return;
+        }
         findAndRegisterMerges();
     }
 

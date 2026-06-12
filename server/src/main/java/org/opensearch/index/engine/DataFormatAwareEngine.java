@@ -463,19 +463,6 @@ public class DataFormatAwareEngine implements Indexer {
                 engineConfig.getIndexSettings(),
                 engineConfig.getThreadPool()
             );
-
-            // Freeze engine and merge scheduler on construction if tiering is already in progress.
-            // Covers node restart / shard relocation where onSettingsChanged hasn't fired yet.
-            String tieringStateOnOpen = engineConfig.getIndexSettings()
-                .getSettings()
-                .get(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.HOT.name());
-            if (IndexModule.TieringState.PREPARING.name().equals(tieringStateOnOpen)
-                || IndexModule.TieringState.HOT_TO_WARM.name().equals(tieringStateOnOpen)) {
-                frozenForTiering = true;
-                mergeScheduler.freeze();
-                logger.info("Engine opened with tiering state [{}] — frozen on construction", tieringStateOnOpen);
-            }
-
             success = true;
             logger.trace("created new DataFormatBasedEngine");
         } catch (IOException | TranslogCorruptedException e) {
@@ -899,11 +886,6 @@ public class DataFormatAwareEngine implements Indexer {
     @Override
     public void refresh(String source) throws EngineException {
         final long refreshStartNanos = System.nanoTime();
-        // While frozen for tiering, skip refreshes except the two issued by the prepare path:
-        // the explicit "prepare_tiering" refresh and the refresh driven by a force flush.
-        if (isFrozenForTiering() && !PREPARE_TIERING_SOURCE.equals(source) && !FLUSH_SOURCE.equals(source)) {
-            return;
-        }
         final long localCheckpointBeforeRefresh = localCheckpointTracker.getProcessedCheckpoint();
         boolean refreshed = false;
         List<Closeable> toClose = new ArrayList<>();
@@ -1099,9 +1081,6 @@ public class DataFormatAwareEngine implements Indexer {
     @Override
     public void flush(boolean force, boolean waitIfOngoing) throws EngineException {
         ensureOpen();
-        if (isFrozenForTiering() && !force) {
-            return;
-        }
         if (force && waitIfOngoing == false) {
             throw new IllegalArgumentException(
                 "wait_if_ongoing must be true for a force flush: force=" + force + " wait_if_ongoing=" + waitIfOngoing
@@ -1317,7 +1296,7 @@ public class DataFormatAwareEngine implements Indexer {
         boolean shouldFreeze;
         try {
             IndexModule.TieringState tieringState = IndexModule.TieringState.valueOf(tieringStateStr);
-            shouldFreeze = tieringState == IndexModule.TieringState.PREPARING || tieringState == IndexModule.TieringState.HOT_TO_WARM;
+            shouldFreeze = tieringState == IndexModule.TieringState.HOT_TO_WARM;
         } catch (IllegalArgumentException e) {
             // Unrecognized tiering-state value — treat as not frozen, but surface the misconfiguration.
             logger.warn(
@@ -1365,7 +1344,7 @@ public class DataFormatAwareEngine implements Indexer {
         String state = engineConfig.getIndexSettings()
             .getSettings()
             .get(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.HOT.name());
-        return IndexModule.TieringState.PREPARING.name().equals(state) || IndexModule.TieringState.HOT_TO_WARM.name().equals(state);
+        return IndexModule.TieringState.HOT_TO_WARM.name().equals(state);
     }
 
     /**
@@ -1374,6 +1353,19 @@ public class DataFormatAwareEngine implements Indexer {
      */
     public void awaitPendingMerges() {
         mergeScheduler.awaitPendingMerges();
+    }
+
+    /**
+     * Registers a listener that fires when all in-flight merges have completed.
+     * If merges are already drained, returns true and the caller can proceed immediately.
+     * Otherwise, returns false and the listener will fire on the merge thread when
+     * the last merge finishes.
+     *
+     * @param listener the callback to fire when merges are drained
+     * @return true if already drained (caller can proceed), false if listener was registered
+     */
+    public boolean onMergesDrained(Runnable listener) {
+        return mergeScheduler.onDrained(listener);
     }
 
     /** {@inheritDoc} Delegates to {@link #refresh(String)} and always returns {@code true}. */
@@ -1886,10 +1878,6 @@ public class DataFormatAwareEngine implements Indexer {
     }
 
     private void applyMergeChanges(MergeResult mergeResult, OneMerge oneMerge) {
-        if (isFrozenForTiering()) {
-            logger.warn("applyMergeChanges blocked — engine is frozen for tiering, discarding merge result");
-            return;
-        }
         assert mergeResult != null : "merge result must not be null";
         assert oneMerge != null : "oneMerge must not be null";
         assert oneMerge.getSegmentsToMerge().isEmpty() == false : "merged segments list must not be empty";

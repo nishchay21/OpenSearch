@@ -25,15 +25,20 @@ import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.inject.Inject;
 import org.opensearch.common.lease.Releasable;
 import org.opensearch.common.unit.TimeValue;
+import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.action.support.DefaultShardOperationFailedException;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.index.shard.IndexShard;
+import org.opensearch.index.shard.IndexShardState;
 import org.opensearch.indices.IndicesService;
+import org.opensearch.storage.common.tiering.TieringUtils;
+import org.opensearch.threadpool.Scheduler;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.TransportService;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Transport action that prepares DFA indices for tiering by performing
@@ -56,6 +61,8 @@ public class TransportPrepareTieringAction extends TransportBroadcastByNodeActio
     private static final TimeValue PERMITS_ACQUIRE_TIMEOUT = TimeValue.timeValueSeconds(30);
 
     private final IndicesService indicesService;
+    private final ThreadPool threadPool;
+    private volatile TimeValue prepareTieringTimeout;
 
     /**
      * Constructs a TransportPrepareTieringAction.
@@ -81,9 +88,39 @@ public class TransportPrepareTieringAction extends TransportBroadcastByNodeActio
             actionFilters,
             indexNameExpressionResolver,
             PrepareTieringRequest::new,
-            ThreadPool.Names.MANAGEMENT
+            ThreadPool.Names.GENERIC
         );
         this.indicesService = indicesService;
+        this.threadPool = transportService.getThreadPool();
+        this.prepareTieringTimeout = TieringUtils.PREPARE_TIERING_TIMEOUT.get(clusterService.getSettings());
+        clusterService.getClusterSettings()
+            .addSettingsUpdateConsumer(TieringUtils.PREPARE_TIERING_TIMEOUT, this::setPrepareTieringTimeout);
+    }
+
+    private void setPrepareTieringTimeout(TimeValue timeout) {
+        this.prepareTieringTimeout = timeout;
+        logger.info("Updated prepare tiering timeout to [{}]", timeout);
+    }
+
+    /**
+     * Opt-in to async shard operation execution. Each shard's syncAndFlush is dispatched
+     * to the thread pool in parallel, and the transport response is sent only after
+     * all shards complete. This prevents long-running flush + remote sync from blocking
+     * the thread that received the transport request.
+     */
+    @Override
+    protected boolean isAsyncShardOperation() {
+        return true;
+    }
+
+    /**
+     * Use GENERIC thread pool for async shard dispatch. Threads are freed immediately
+     * because the actual work (flush + sync) happens asynchronously via the merge drain
+     * listener callback — no thread ever blocks waiting for merges.
+     */
+    @Override
+    protected String asyncShardOperationThreadPool() {
+        return ThreadPool.Names.GENERIC;
     }
 
     @Override
@@ -109,22 +146,94 @@ public class TransportPrepareTieringAction extends TransportBroadcastByNodeActio
         return new PrepareTieringRequest(in);
     }
 
+    /**
+     * Sync fallback — required by the abstract contract but never called because
+     * {@link #isAsyncShardOperation()} returns true and we override
+     * {@link #shardOperationAsync}. Throws unconditionally to catch misuse.
+     */
     @Override
     protected EmptyResult shardOperation(PrepareTieringRequest request, ShardRouting shardRouting) throws IOException {
-        IndexShard indexShard = indicesService.indexServiceSafe(shardRouting.shardId().getIndex()).getShard(shardRouting.shardId().id());
-        logger.debug("Preparing shard [{}] for tiering", shardRouting.shardId());
+        throw new UnsupportedOperationException(
+            "TransportPrepareTieringAction uses shardOperationAsync exclusively; sync path should never be called"
+        );
+    }
 
-        Releasable permit = acquirePrimaryPermits(indexShard, shardRouting);
-        try {
-            syncAndFlush(indexShard, shardRouting);
-            waitForRemoteSync(indexShard, shardRouting);
-            verifyNoUncommittedOps(indexShard, shardRouting);
-        } finally {
-            permit.close();
+    /**
+     * Non-blocking async shard operation. Registers a merge drain listener instead of
+     * blocking a thread waiting for merges. Uses AtomicBoolean to ensure only one path
+     * (merge callback OR timeout) completes the operation.
+     */
+    @Override
+    protected void shardOperationAsync(
+        PrepareTieringRequest request,
+        ShardRouting shardRouting,
+        ActionListener<EmptyResult> listener
+    ) {
+        IndexShard indexShard = indicesService.indexServiceSafe(shardRouting.shardId().getIndex()).getShard(shardRouting.shardId().id());
+        logger.debug("Preparing shard [{}] for tiering (async path)", shardRouting.shardId());
+
+        // Fail fast if shard is not fully started
+        if (indexShard.state() != IndexShardState.STARTED) {
+            listener.onFailure(new IOException(
+                "Shard [" + shardRouting.shardId() + "] is not in STARTED state (current: "
+                    + indexShard.state() + "). Cannot prepare for tiering — will retry."
+            ));
+            return;
         }
 
-        logger.debug("Shard [{}] prepared for tiering successfully", shardRouting.shardId());
-        return EmptyResult.INSTANCE;
+        Releasable permit;
+        try {
+            permit = acquirePrimaryPermits(indexShard, shardRouting);
+        } catch (IOException e) {
+            //todo: add log
+            listener.onFailure(e);
+            return;
+        }
+
+        indexShard.freezeForTiering();
+
+        // Timeout: prefer request-level timeout if explicitly set, otherwise use the cluster setting.
+        // The cluster setting (default 10m) gives enough headroom for large indices with slow remote uploads.
+        TimeValue mergeTimeout = request.timeout() != null ? request.timeout() : prepareTieringTimeout;
+        AtomicBoolean completed = new AtomicBoolean(false);
+
+        // Schedule timeout — if merges don't drain in time, fail the operation
+        Scheduler.ScheduledCancellable timeout = threadPool.schedule(() -> {
+            if (completed.compareAndSet(false, true)) {
+                permit.close();
+                listener.onFailure(new IOException(
+                    "Timed out waiting for merges to drain on shard [" + shardRouting.shardId() + "]"
+                ));
+            }
+        }, mergeTimeout, ThreadPool.Names.GENERIC);
+
+        // Non-blocking merge wait
+        boolean alreadyDrained = indexShard.onMergesDrained(() -> {
+            if (completed.compareAndSet(false, true)) {
+                timeout.cancel();
+                try {
+                    completeSyncAndFlush(indexShard, shardRouting);
+                    permit.close();
+                    listener.onResponse(EmptyResult.INSTANCE);
+                } catch (Exception e) {
+                    permit.close();
+                    listener.onFailure(e);
+                }
+            }
+        });
+
+        if (alreadyDrained && completed.compareAndSet(false, true)) {
+            timeout.cancel();
+            try {
+                completeSyncAndFlush(indexShard, shardRouting);
+                permit.close();
+                listener.onResponse(EmptyResult.INSTANCE);
+            } catch (Exception e) {
+                permit.close();
+                listener.onFailure(e);
+            }
+        }
+        // Thread returns immediately — not blocked!
     }
 
     /**
@@ -143,41 +252,21 @@ public class TransportPrepareTieringAction extends TransportBroadcastByNodeActio
     }
 
     /**
-     * Freezes the engine, syncs the translog for durability, then flushes all data to committed
-     * segments and refreshes. After this method, all indexed data is committed to segments on disk
-     * and visible to readers. The subsequent upload to the remote store is handled separately by
-     * {@link #waitForRemoteSync}.
+     * Performs the final sync, flush, refresh, remote store sync, and verification.
+     * Called after merges have drained (either via blocking wait or async listener).
      */
-    private void syncAndFlush(IndexShard indexShard, ShardRouting shardRouting) throws IOException {
-        logger.trace("Syncing and flushing shard [{}]", shardRouting.shardId());
-
-        // Freeze the engine before the final sync. Closes the race window where the cluster-state
-        // update setting INDEX_TIERING_STATE=PREPARING has not yet propagated to this data node.
-        // After this, no new merges can start and any merge results that arrive late are discarded.
-        // No-op if the engine was already frozen via onSettingsChanged.
-        indexShard.freezeForTiering();
-
-        // freezeForTiering() already drains in-flight merges; this guards the narrow window where a
-        // merge was submitted concurrently with the freeze. Once frozen, the flush()/refresh() below
-        // cannot start new merges, so a single drain here is sufficient.
-        indexShard.awaitPendingMerges();
-
+    private void completeSyncAndFlush(IndexShard indexShard, ShardRouting shardRouting) throws IOException {
+        logger.trace("Completing sync and flush for shard [{}]", shardRouting.shardId());
         indexShard.sync();
         // Flush before refresh: committed segments_N must exist before waitForRemoteStoreSync uploads them.
-        // Refreshing first would expose segments not yet committed — the remote store sync would miss them.
         // force=true bypasses the freeze guard — this is the last flush ever for this engine.
         indexShard.flush(new FlushRequest().force(true).waitIfOngoing(true));
         // "prepare_tiering" source bypasses the freeze guard — this is the last refresh ever.
         indexShard.refresh("prepare_tiering");
-    }
-
-    /**
-     * Waits until all local segments are uploaded to remote store.
-     * Blocks until remote store is fully in sync with local state.
-     */
-    private void waitForRemoteSync(IndexShard indexShard, ShardRouting shardRouting) throws IOException {
-        logger.trace("Waiting for remote store sync on shard [{}]", shardRouting.shardId());
         indexShard.waitForRemoteStoreSync();
+        verifyNoUncommittedOps(indexShard, shardRouting);
+
+        logger.debug("Shard [{}] prepared for tiering successfully", shardRouting.shardId());
     }
 
     /**

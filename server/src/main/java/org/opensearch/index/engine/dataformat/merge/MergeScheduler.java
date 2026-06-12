@@ -24,6 +24,8 @@ import org.opensearch.threadpool.ThreadPool;
 
 import java.io.IOException;
 import java.util.Collection;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
@@ -49,6 +51,7 @@ public class MergeScheduler {
     private final AtomicInteger activeMerges = new AtomicInteger(0);
     private final AtomicBoolean isShutdown = new AtomicBoolean(false);
     private final AtomicBoolean frozen = new AtomicBoolean(false);
+    private final List<Runnable> onDrainedListeners = new CopyOnWriteArrayList<>();
     private volatile int maxConcurrentMerges;
     private volatile int maxMergeCount;
     private final MergeSchedulerConfig mergeSchedulerConfig;
@@ -128,12 +131,11 @@ public class MergeScheduler {
             logger.warn("MergeScheduler is shutdown, ignoring merge trigger");
             return;
         }
-        if (isFrozen()) {
-            return;
+        // Only register new merges if not frozen. Already-pending merges
+        // should still be executed to drain the queue to completion.
+        if (!isFrozen()) {
+            mergeHandler.findAndRegisterMerges();
         }
-
-        mergeHandler.findAndRegisterMerges();
-
         executeMerge();
     }
 
@@ -144,10 +146,6 @@ public class MergeScheduler {
      * @param maxNumSegment the maximum number of segments after the force merge
      */
     public void forceMerge(int maxNumSegment) throws IOException {
-        if (isFrozen()) {
-            logger.info("MergeScheduler is frozen for tiering, ignoring force merge");
-            return;
-        }
         if (activeMerges.get() > 0) {
             logger.warn("Cannot force merge while background merges are active");
             throw new IllegalStateException("Cannot force merge while background merges are active");
@@ -164,7 +162,7 @@ public class MergeScheduler {
                     mergeStatsTracker.beforeMerge(totalNumDocs, totalSizeInBytes);
                     MergeResult mergeResult = mergeHandler.doMerge(oneMerge);
                     applyMergeChanges.accept(mergeResult, oneMerge);
-                    mergeHandler.onMergeFinished(oneMerge);
+                    mergeHandler.onMergeFinished(oneMerge, isFrozen());
                     tookMS = TimeValue.nsecToMSec((System.nanoTime() - timeNS));
                 } catch (Exception e) {
                     logger.error(new ParameterizedMessage("Force merge failed for: {}", oneMerge), e);
@@ -205,7 +203,6 @@ public class MergeScheduler {
      */
     public void freeze() {
         frozen.set(true);
-        awaitPendingMerges();
     }
 
     /**
@@ -225,14 +222,14 @@ public class MergeScheduler {
             return true;
         }
         String state = indexSettings.getSettings().get(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.HOT.name());
-        return IndexModule.TieringState.PREPARING.name().equals(state) || IndexModule.TieringState.HOT_TO_WARM.name().equals(state);
+        return IndexModule.TieringState.HOT_TO_WARM.name().equals(state);
     }
 
     /**
      * Blocks until all in-flight merge tasks complete.
      */
     public void awaitPendingMerges() {
-        while (activeMerges.get() > 0) {
+        while (activeMerges.get() > 0 || mergeHandler.hasPendingMerges()) {
             try {
                 Thread.sleep(100);
             } catch (InterruptedException e) {
@@ -240,6 +237,32 @@ public class MergeScheduler {
                 break;
             }
         }
+    }
+
+    /**
+     * Registers a listener that fires when all active merges complete.
+     * If already drained (no active merges and no pending), returns true immediately
+     * and the caller can proceed synchronously. Otherwise, adds the listener to the
+     * list and returns false — all registered listeners will be invoked on the merge
+     * thread when the last merge finishes.
+     * <p>
+     * Multiple listeners can be registered concurrently (thread-safe via CopyOnWriteArrayList).
+     *
+     * @param listener the callback to fire when merges are drained
+     * @return true if already drained (caller can proceed), false if listener was registered
+     */
+    public boolean onDrained(Runnable listener) {
+        if (activeMerges.get() == 0 && !mergeHandler.hasPendingMerges()) {
+            return true; // already drained
+        }
+        onDrainedListeners.add(listener);
+        // Double-check after adding — merges may have finished between the check and the add
+        if (activeMerges.get() == 0 && !mergeHandler.hasPendingMerges()) {
+            if (onDrainedListeners.remove(listener)) {
+                listener.run();
+            }
+        }
+        return false; // will callback later
     }
 
     /**
@@ -263,9 +286,6 @@ public class MergeScheduler {
      * submitting each merge as a task to the thread pool.
      */
     private void executeMerge() {
-        if (isFrozen()) {
-            return;
-        }
         while (activeMerges.get() < maxConcurrentMerges && mergeHandler.hasPendingMerges()) {
             OneMerge oneMerge = mergeHandler.getNextMerge();
             if (oneMerge == null) {
@@ -302,7 +322,7 @@ public class MergeScheduler {
 
                 MergeResult mergeResult = mergeHandler.doMerge(oneMerge);
                 applyMergeChanges.accept(mergeResult, oneMerge);
-                mergeHandler.onMergeFinished(oneMerge);
+                mergeHandler.onMergeFinished(oneMerge, isFrozen());
 
                 tookMS = TimeValue.nsecToMSec((System.nanoTime() - timeNS));
                 logger.info("Merge {} completed in {}ms, result: {}", oneMerge, tookMS, mergeResult.getMergedWriterFileSet());
@@ -315,6 +335,18 @@ public class MergeScheduler {
                 mergeStatsTracker.afterMerge(tookMS, totalNumDocs, totalSizeInBytes);
 
                 activeMerges.decrementAndGet();
+                // Fire all drain listeners if all merges completed and none pending
+                if (activeMerges.get() == 0 && !mergeHandler.hasPendingMerges() && !onDrainedListeners.isEmpty()) {
+                    List<Runnable> listeners = List.copyOf(onDrainedListeners);
+                    onDrainedListeners.clear();
+                    for (Runnable listener : listeners) {
+                        try {
+                            listener.run();
+                        } catch (Exception ex) {
+                            logger.warn("Exception in onDrained listener", ex);
+                        }
+                    }
+                }
                 // A completed merge may free up capacity for new merges, so check again.
                 executeMerge();
             }

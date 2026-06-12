@@ -176,7 +176,9 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
         int attempt
     ) {
         PrepareTieringRequest prepareTieringRequest = new PrepareTieringRequest(request.getIndex());
-        prepareTieringRequest.timeout(request.timeout());
+        // Use the cluster setting for timeout instead of the short AcknowledgedRequest default (30s).
+        // This controls both the transport channel timeout and the merge drain timeout on the data node.
+        prepareTieringRequest.timeout(TieringUtils.PREPARE_TIERING_TIMEOUT.get(clusterService.getSettings()));
 
         prepareTieringAction.execute(prepareTieringRequest, new ActionListener<BroadcastResponse>() {
             @Override

@@ -100,14 +100,14 @@ public class MergeSchedulerTests extends OpenSearchTestCase {
         verify(mergeHandler, times(1)).findAndRegisterMerges();
     }
 
-    public void testIsFrozenReflectsPreparingTieringState() {
+    public void testIsNotFrozenForPreparingTieringState() {
         MergeHandler mergeHandler = mock(MergeHandler.class);
-        // No explicit freeze() — the PREPARING tiering state alone must report frozen.
+        // PREPARING state should NOT freeze — only HOT_TO_WARM freezes.
         MergeScheduler scheduler = newScheduler(mergeHandler, IndexModule.TieringState.PREPARING);
-        assertTrue("PREPARING tiering state must report frozen", scheduler.isFrozen());
+        assertFalse("PREPARING tiering state must NOT report frozen", scheduler.isFrozen());
 
         scheduler.triggerMerges();
-        verify(mergeHandler, never()).findAndRegisterMerges();
+        verify(mergeHandler, times(1)).findAndRegisterMerges();
     }
 
     public void testIsFrozenReflectsHotToWarmTieringState() {

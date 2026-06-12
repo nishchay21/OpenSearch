@@ -710,8 +710,7 @@ public abstract class TieringService implements ClusterStateListener {
             return false;
         }
         final String state = indexMetadata.getSettings().get(INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.HOT.name());
-        return IndexModule.TieringState.PREPARING.name().equals(state)
-            || IndexModule.TieringState.HOT_TO_WARM.name().equals(state)
+        return IndexModule.TieringState.HOT_TO_WARM.name().equals(state)
             || IndexModule.TieringState.WARM_TO_HOT.name().equals(state);
     }
 
