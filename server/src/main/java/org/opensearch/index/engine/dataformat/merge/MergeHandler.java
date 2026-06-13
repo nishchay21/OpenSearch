@@ -169,6 +169,15 @@ public class MergeHandler {
     }
 
     /**
+     * Returns the number of pending (queued but not yet started) merges.
+     *
+     * @return the pending merge count
+     */
+    public synchronized int getPendingMergeCount() {
+        return pendingMerges.size();
+    }
+
+    /**
      * Retrieves and removes the next pending merge from the queue.
      *
      * @return the next merge to execute, or {@code null} if the queue is empty

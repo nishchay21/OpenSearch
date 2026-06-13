@@ -1651,6 +1651,67 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
         }
     }
 
+    /**
+     * Explicitly freezes the engine for tiering. Closes the race window where the
+     * cluster state with PREPARING hasn't propagated to this data node yet.
+     * After this call, no new merges can start and in-flight merges are drained.
+     * Only effective when the engine is a {@link DataFormatAwareEngine}; otherwise a no-op.
+     */
+    public void freezeForTiering() {
+        final Indexer engine = getIndexerOrNull();
+        if (engine instanceof DataFormatAwareEngine dfa) {
+            dfa.freezeForTiering();
+        }
+    }
+
+    /**
+     * Registers a listener that fires when all in-flight merge operations have completed.
+     * If merges are already drained (none active, none pending), returns true and the
+     * caller can proceed immediately. Otherwise, returns false and the listener will be
+     * invoked on the merge thread when the last merge finishes.
+     * <p>
+     * Only effective when the engine is a {@link DataFormatAwareEngine}; returns true
+     * (already drained) for other engine types since they don't use this merge scheduler.
+     *
+     * @param listener the callback to fire when merges are drained
+     * @return true if already drained, false if listener was registered
+     */
+    public boolean onMergesDrained(Runnable listener) {
+        final Indexer engine = getIndexerOrNull();
+        if (engine instanceof DataFormatAwareEngine dfa) {
+            return dfa.onMergesDrained(listener);
+        }
+        return true; // non-DFA engines have no merge scheduler — consider drained
+    }
+
+    /**
+     * Returns the number of currently active (in-flight) merge tasks.
+     * Returns 0 for non-DFA engines.
+     *
+     * @return the active merge count
+     */
+    public int getActiveMergeCount() {
+        final Indexer engine = getIndexerOrNull();
+        if (engine instanceof DataFormatAwareEngine dfa) {
+            return dfa.getActiveMergeCount();
+        }
+        return 0;
+    }
+
+    /**
+     * Returns the number of pending (queued but not yet started) merge tasks.
+     * Returns 0 for non-DFA engines.
+     *
+     * @return the pending merge count
+     */
+    public int getPendingMergeCount() {
+        final Indexer engine = getIndexerOrNull();
+        if (engine instanceof DataFormatAwareEngine dfa) {
+            return dfa.getPendingMergeCount();
+        }
+        return 0;
+    }
+
     public SegmentsStats segmentStats(boolean includeSegmentFileSizes, boolean includeUnloadedSegments) {
         SegmentsStats segmentsStats = getIndexer().segmentsStats(includeSegmentFileSizes, includeUnloadedSegments);
         segmentsStats.addBitsetMemoryInBytes(shardBitsetFilterCache.getMemorySizeInBytes());
@@ -5830,6 +5891,16 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
      * @throws IOException if exception occurs while reading segments from remote store.
      */
     public void syncSegmentsFromRemoteSegmentStore(boolean overrideLocal, final Runnable onFileSync) throws IOException {
+        // DEBUG: Slow down recovery to reproduce merge race during tiering
+        String tieringState = indexSettings.getSettings().get(IndexModule.INDEX_TIERING_STATE.getKey(), "HOT");
+        if ("PREPARING".equals(tieringState) || "HOT_TO_WARM".equals(tieringState)) {
+            logger.info("[DFA-TIERING-DEBUG] Sleeping 30s in syncSegmentsFromRemoteSegmentStore to simulate slow recovery");
+            try {
+                Thread.sleep(30000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
         boolean syncSegmentSuccess = false;
         long startTimeMs = System.currentTimeMillis();
         assert indexSettings.isRemoteStoreEnabled() || this.isRemoteSeeded();

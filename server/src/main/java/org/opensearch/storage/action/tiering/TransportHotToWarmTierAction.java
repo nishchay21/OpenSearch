@@ -24,6 +24,7 @@ import org.opensearch.common.Priority;
 import org.opensearch.common.inject.Inject;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.core.action.ActionListener;
+import org.opensearch.core.action.support.DefaultShardOperationFailedException;
 import org.opensearch.core.index.Index;
 import org.opensearch.index.IndexModule;
 import org.opensearch.storage.common.tiering.TieringUtils;
@@ -174,7 +175,9 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
         int attempt
     ) {
         PrepareTieringRequest prepareTieringRequest = new PrepareTieringRequest(request.getIndex());
-        prepareTieringRequest.timeout(request.timeout());
+        // Use the cluster setting for timeout instead of the short AcknowledgedRequest default (30s).
+        // This controls both the transport channel timeout and the merge drain timeout on the data node.
+        prepareTieringRequest.timeout(TieringUtils.PREPARE_TIERING_TIMEOUT.get(clusterService.getSettings()));
 
         prepareTieringAction.execute(prepareTieringRequest, new ActionListener<BroadcastResponse>() {
             @Override
@@ -191,13 +194,67 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
                         executePrepareTiering(request, state, listener, attempt + 1);
                         return;
                     }
-                    String errorMsg = "Pre-tiering sync failed for index ["
-                        + request.getIndex()
-                        + "] after "
-                        + MAX_PREPARE_RETRIES
-                        + " attempts: "
-                        + broadcastResponse.getFailedShards()
-                        + " shard(s) failed. Please retry the tiering request.";
+                    // Build a targeted error message based on failure type.
+                    // Note: MergeDrainTimeoutException may arrive deserialized as a generic exception
+                    // in mixed-version clusters, so we check both instanceof and message prefix.
+                    DefaultShardOperationFailedException[] failures = broadcastResponse.getShardFailures();
+                    MergeDrainTimeoutException mergeTimeoutSample = null;
+                    int mergeTimeoutCount = 0;
+                    int otherFailureCount = 0;
+
+                    for (DefaultShardOperationFailedException f : failures) {
+                        Throwable cause = f.getCause();
+                        // Unwrap to find the real cause
+                        Throwable realCause = cause != null ? cause.getCause() : null;
+                        if (realCause instanceof MergeDrainTimeoutException mdte) {
+                            mergeTimeoutCount++;
+                            if (mergeTimeoutSample == null) mergeTimeoutSample = mdte;
+                        } else if (isMergeDrainTimeout(cause) || isMergeDrainTimeout(realCause)) {
+                            // Fallback: message-based detection for mixed-version clusters
+                            mergeTimeoutCount++;
+                        } else {
+                            otherFailureCount++;
+                        }
+                    }
+
+                    String errorMsg;
+                    if (mergeTimeoutSample != null && otherFailureCount == 0) {
+                        // All failures are merge drain timeouts — give targeted advice
+                        errorMsg = MergeDrainTimeoutException.userFacingSummary(mergeTimeoutCount, mergeTimeoutSample);
+                    } else if (mergeTimeoutCount > 0 && otherFailureCount == 0) {
+                        // All merge timeouts but no typed exception (mixed-version fallback)
+                        errorMsg = "Tiering preparation timed out: "
+                            + mergeTimeoutCount
+                            + " shard(s) still have active merges. "
+                            + "Increase cluster.tiering.prepare_timeout or retry later.";
+                    } else if (mergeTimeoutCount > 0) {
+                        // Mixed failures
+                        errorMsg = "Pre-tiering sync failed for index ["
+                            + request.getIndex()
+                            + "] after "
+                            + MAX_PREPARE_RETRIES
+                            + " attempts: "
+                            + mergeTimeoutCount
+                            + " shard(s) timed out waiting for merges, "
+                            + otherFailureCount
+                            + " shard(s) failed for other reasons. "
+                            + "Consider increasing cluster.tiering.prepare_timeout or retry later.";
+                    } else {
+                        // No merge timeouts — generic message with first failure details
+                        String firstFailure = failures.length == 0
+                            ? "unknown"
+                            : (failures[0].getCause() != null ? failures[0].getCause().getMessage() : "unknown");
+                        errorMsg = "Pre-tiering sync failed for index ["
+                            + request.getIndex()
+                            + "] after "
+                            + MAX_PREPARE_RETRIES
+                            + " attempts: "
+                            + broadcastResponse.getFailedShards()
+                            + " shard(s) failed. "
+                            + "First failure: "
+                            + firstFailure
+                            + ". Please retry.";
+                    }
                     logger.error(errorMsg);
                     removeReadOnlyBlock(request.getIndex());
                     listener.onFailure(new IllegalStateException(errorMsg));
@@ -235,6 +292,15 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
                 listener.onFailure(new IllegalStateException(errorMsg, e));
             }
         });
+    }
+
+    /**
+     * Checks if a throwable is a merge drain timeout based on its message.
+     * Used as a fallback for mixed-version clusters where the typed exception
+     * may have been deserialized as a generic exception.
+     */
+    private static boolean isMergeDrainTimeout(Throwable t) {
+        return t != null && t.getMessage() != null && t.getMessage().contains("timed out waiting for merges to drain");
     }
 
     /**

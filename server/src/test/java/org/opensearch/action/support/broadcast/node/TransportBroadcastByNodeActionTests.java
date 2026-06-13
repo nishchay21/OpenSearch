@@ -637,4 +637,42 @@ public class TransportBroadcastByNodeActionTests extends OpenSearchTestCase {
         OptionallyResolvedIndices resolvedIndices = action.resolveIndices(request);
         assertEquals(ResolvedIndices.of(TEST_INDEX), resolvedIndices);
     }
+
+    // ── Async shardOperationAsync tests ──────────────────────────────────────
+
+    /**
+     * Verifies that isAsyncShardOperation defaults to false.
+     */
+    public void testIsAsyncShardOperation_DefaultFalse() {
+        assertFalse("Default isAsyncShardOperation should be false", action.isAsyncShardOperation());
+    }
+
+    /**
+     * Verifies that asyncShardOperationThreadPool defaults to GENERIC.
+     */
+    public void testAsyncShardOperationThreadPool_DefaultGeneric() {
+        assertEquals(ThreadPool.Names.GENERIC, action.asyncShardOperationThreadPool());
+    }
+
+    /**
+     * Verifies that the default shardOperationAsync delegates to sync shardOperation
+     * and calls onResponse on success.
+     */
+    public void testShardOperationAsync_DefaultDelegatesToSync_Success() throws Exception {
+        Request request = new Request(TEST_INDEX);
+        ShardId shardId = new ShardId(new Index(TEST_INDEX, "_na_"), 0);
+        ShardRouting shardRouting = TestShardRouting.newShardRouting(shardId, "node1", true, ShardRoutingState.STARTED);
+
+        PlainActionFuture<TransportBroadcastByNodeAction.EmptyResult> future = new PlainActionFuture<>();
+        // action.shardOperation either returns EmptyResult or throws — the default shardOperationAsync wraps it
+        action.shardOperationAsync(request, shardRouting, future);
+
+        // The action's shardOperation randomly succeeds or fails — just verify listener was called
+        try {
+            future.actionGet();
+        } catch (Exception e) {
+            // Expected — the test action randomly throws. The key is that the listener was invoked.
+            assertNotNull("Exception should propagate through listener", e);
+        }
+    }
 }

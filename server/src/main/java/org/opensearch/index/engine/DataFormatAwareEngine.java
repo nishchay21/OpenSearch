@@ -1293,8 +1293,7 @@ public class DataFormatAwareEngine implements Indexer {
         try {
             IndexModule.TieringState tieringState = IndexModule.TieringState.valueOf(tieringStateStr);
             shouldFreeze = tieringState == IndexModule.TieringState.HOT_TO_WARM;
-            isTieringActive = tieringState == IndexModule.TieringState.PREPARING
-                || tieringState == IndexModule.TieringState.HOT_TO_WARM;
+            isTieringActive = tieringState == IndexModule.TieringState.PREPARING || tieringState == IndexModule.TieringState.HOT_TO_WARM;
         } catch (IllegalArgumentException e) {
             shouldFreeze = false;
             isTieringActive = false;
@@ -1354,7 +1353,8 @@ public class DataFormatAwareEngine implements Indexer {
         }
         // Fallback: read live settings — covers fresh engine on a new node mid-tiering.
         // Only HOT_TO_WARM counts here; PREPARING is handled by explicit freezeForTiering() call.
-        String state = engineConfig.getIndexSettings().getSettings()
+        String state = engineConfig.getIndexSettings()
+            .getSettings()
             .get(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.HOT.name());
         return IndexModule.TieringState.HOT_TO_WARM.name().equals(state);
     }
@@ -1366,6 +1366,37 @@ public class DataFormatAwareEngine implements Indexer {
      */
     public void awaitPendingMerges() {
         mergeScheduler.awaitPendingMerges();
+    }
+
+    /**
+     * Registers a listener that fires when all in-flight merges have completed.
+     * If merges are already drained, returns true and the caller can proceed immediately.
+     * Otherwise, returns false and the listener will fire on the merge thread when
+     * the last merge finishes.
+     *
+     * @param listener the callback to fire when merges are drained
+     * @return true if already drained (caller can proceed), false if listener was registered
+     */
+    public boolean onMergesDrained(Runnable listener) {
+        return mergeScheduler.onDrained(listener);
+    }
+
+    /**
+     * Returns the number of currently active (in-flight) merge tasks.
+     *
+     * @return the active merge count, or 0 if no merges are running
+     */
+    public int getActiveMergeCount() {
+        return mergeScheduler.getActiveMergeCount();
+    }
+
+    /**
+     * Returns the number of pending (queued but not yet started) merge tasks.
+     *
+     * @return the pending merge count, or 0 if none queued
+     */
+    public int getPendingMergeCount() {
+        return mergeScheduler.getPendingMergeCount();
     }
 
     /** {@inheritDoc} Delegates to {@link #refresh(String)} and always returns {@code true}. */
