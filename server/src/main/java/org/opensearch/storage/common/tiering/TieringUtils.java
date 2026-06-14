@@ -129,14 +129,14 @@ public class TieringUtils {
     /**
      * Timeout for the prepare tiering action (merge drain + flush + sync + remote upload).
      * Controls how long each shard waits for in-flight merges to complete before timing out.
-     * Default is 10 minutes — large indices with many segments may need significant time
+     * Default is 90 seconds — large indices with many segments may need significant time
      * for the remote store upload after flush.
      */
     public static final String PREPARE_TIERING_TIMEOUT_KEY = "cluster.tiering.prepare_timeout";
     /** Setting for prepare tiering timeout. Dynamically updatable via cluster settings API. */
     public static final Setting<TimeValue> PREPARE_TIERING_TIMEOUT = Setting.timeSetting(
         PREPARE_TIERING_TIMEOUT_KEY,
-        TimeValue.timeValueSeconds(30),
+        TimeValue.timeValueSeconds(90),
         TimeValue.timeValueSeconds(30),
         Setting.Property.Dynamic,
         Setting.Property.NodeScope
@@ -235,7 +235,6 @@ public class TieringUtils {
         );
         switch (tieringState) {
             case HOT_TO_WARM:
-            case PREPARING:
             case WARM:
                 return HOT_TO_WARM;
             case HOT:

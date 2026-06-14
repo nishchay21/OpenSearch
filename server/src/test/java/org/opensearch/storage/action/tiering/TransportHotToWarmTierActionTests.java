@@ -110,8 +110,7 @@ public class TransportHotToWarmTierActionTests extends OpenSearchTestCase {
         IndexMetadata indexMetadata = currentState.metadata().index(indexName);
         Settings.Builder indexSettingsBuilder = Settings.builder()
             .put(indexMetadata.getSettings())
-            .put(IndexMetadata.INDEX_BLOCKS_WRITE_SETTING.getKey(), true)
-            .put(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.PREPARING.name());
+            .put(IndexMetadata.INDEX_BLOCKS_WRITE_SETTING.getKey(), true);
 
         IndexMetadata.Builder indexMetadataBuilder = IndexMetadata.builder(indexMetadata)
             .settings(indexSettingsBuilder)
@@ -125,9 +124,8 @@ public class TransportHotToWarmTierActionTests extends OpenSearchTestCase {
     }
 
     /**
-     * Removes the write block and rolls back the tiering state (same logic as
-     * TransportHotToWarmTierAction.rollbackPreparing). The tiering state is reset to HOT only when it
-     * is still PREPARING, so a state that already advanced to HOT_TO_WARM is left untouched.
+     * Removes the write block (same logic as TransportHotToWarmTierAction.removeWriteBlock). The tiering
+     * state is never mutated.
      */
     private ClusterState removeWriteBlock(ClusterState currentState, String indexName) {
         IndexMetadata indexMetadata = currentState.metadata().index(indexName);
@@ -137,12 +135,6 @@ public class TransportHotToWarmTierActionTests extends OpenSearchTestCase {
         Settings.Builder indexSettingsBuilder = Settings.builder()
             .put(indexMetadata.getSettings())
             .put(IndexMetadata.INDEX_BLOCKS_WRITE_SETTING.getKey(), false);
-
-        String currentTieringState = indexMetadata.getSettings()
-            .get(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.HOT.name());
-        if (IndexModule.TieringState.PREPARING.name().equals(currentTieringState)) {
-            indexSettingsBuilder.put(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.HOT.name());
-        }
 
         IndexMetadata.Builder indexMetadataBuilder = IndexMetadata.builder(indexMetadata)
             .settings(indexSettingsBuilder)
@@ -822,54 +814,32 @@ public class TransportHotToWarmTierActionTests extends OpenSearchTestCase {
         );
     }
 
-    // ── PREPARING tiering-state transitions ─────────────────────────────────────
+    // ── write-block add/remove ──────────────────────────────────────────────────
 
-    /** Adding the write block must also move the index into the PREPARING tiering state. */
-    public void testAddWriteBlock_SetsPreparingTieringState() {
+    /** Adding the write block must set the write-block setting and cluster block without touching tiering state. */
+    public void testAddWriteBlock_SetsWriteBlock_DoesNotMutateTieringState() {
         String indexName = "test-dfa-index";
         ClusterState state = buildClusterStateWithDfaIndex(indexName, 1, 1);
 
         ClusterState stateWithBlock = addReadOnlyBlock(state, indexName);
 
         assertTrue("Write block must be present", stateWithBlock.blocks().hasIndexBlock(indexName, IndexMetadata.INDEX_WRITE_BLOCK));
-        assertEquals(
-            "Tiering state must be PREPARING after adding the write block",
-            IndexModule.TieringState.PREPARING.name(),
+        assertTrue(
+            "Write-block setting must be true",
+            stateWithBlock.metadata().index(indexName).getSettings().getAsBoolean(IndexMetadata.INDEX_BLOCKS_WRITE_SETTING.getKey(), false)
+        );
+        assertNull(
+            "Tiering state must not be written when adding the write block",
             stateWithBlock.metadata().index(indexName).getSettings().get(IndexModule.INDEX_TIERING_STATE.getKey())
         );
     }
 
-    /** On prepare failure, rollback removes the block AND resets the tiering state from PREPARING back to HOT. */
-    public void testRollbackPreparing_ResetsStateToHot_WhenPreparing() {
+    /** Removing the write block must lift the block and leave the tiering state untouched. */
+    public void testRemoveWriteBlock_RemovesBlock_DoesNotMutateTieringState() {
         String indexName = "test-dfa-index";
         ClusterState state = buildClusterStateWithDfaIndex(indexName, 1, 1);
 
-        ClusterState stateWithBlock = addReadOnlyBlock(state, indexName);
-        assertEquals(
-            "Precondition: state must be PREPARING",
-            IndexModule.TieringState.PREPARING.name(),
-            stateWithBlock.metadata().index(indexName).getSettings().get(IndexModule.INDEX_TIERING_STATE.getKey())
-        );
-
-        ClusterState rolledBack = removeWriteBlock(stateWithBlock, indexName);
-
-        assertFalse(
-            "Write block must be removed on rollback",
-            rolledBack.blocks().hasIndexBlock(indexName, IndexMetadata.INDEX_WRITE_BLOCK)
-        );
-        assertEquals(
-            "Tiering state must be reset to HOT so the engine unfreezes",
-            IndexModule.TieringState.HOT.name(),
-            rolledBack.metadata().index(indexName).getSettings().get(IndexModule.INDEX_TIERING_STATE.getKey())
-        );
-    }
-
-    /** Rollback must NOT clobber a state that already advanced to HOT_TO_WARM (tier() partially succeeded). */
-    public void testRollbackPreparing_DoesNotResetState_WhenAlreadyHotToWarm() {
-        String indexName = "test-dfa-index";
-        ClusterState state = buildClusterStateWithDfaIndex(indexName, 1, 1);
-
-        // Simulate the write block present but the tiering state already advanced to HOT_TO_WARM.
+        // Simulate the write block present and the tiering state already advanced to HOT_TO_WARM.
         IndexMetadata indexMetadata = state.metadata().index(indexName);
         Settings.Builder settings = Settings.builder()
             .put(indexMetadata.getSettings())
@@ -882,14 +852,22 @@ public class TransportHotToWarmTierActionTests extends OpenSearchTestCase {
             .blocks(state.blocks())
             .addIndexBlock(indexName, IndexMetadata.INDEX_WRITE_BLOCK)
             .build();
-        ClusterState hotToWarmState = ClusterState.builder(state).metadata(metadata).blocks(blocks).build();
+        ClusterState blockedState = ClusterState.builder(state).metadata(metadata).blocks(blocks).build();
 
-        ClusterState rolledBack = removeWriteBlock(hotToWarmState, indexName);
+        ClusterState result = removeWriteBlock(blockedState, indexName);
 
+        assertFalse(
+            "Write block must be removed",
+            result.blocks().hasIndexBlock(indexName, IndexMetadata.INDEX_WRITE_BLOCK)
+        );
+        assertFalse(
+            "Write-block setting must be false after removal",
+            result.metadata().index(indexName).getSettings().getAsBoolean(IndexMetadata.INDEX_BLOCKS_WRITE_SETTING.getKey(), false)
+        );
         assertEquals(
-            "HOT_TO_WARM state must be preserved, not reverted to HOT",
+            "Tiering state must be left untouched by write-block removal",
             IndexModule.TieringState.HOT_TO_WARM.name(),
-            rolledBack.metadata().index(indexName).getSettings().get(IndexModule.INDEX_TIERING_STATE.getKey())
+            result.metadata().index(indexName).getSettings().get(IndexModule.INDEX_TIERING_STATE.getKey())
         );
     }
 

@@ -17,6 +17,8 @@ import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.test.IndexSettingsModule;
 import org.opensearch.test.OpenSearchTestCase;
+
+import java.util.Collections;
 import org.opensearch.threadpool.TestThreadPool;
 import org.opensearch.threadpool.ThreadPool;
 
@@ -100,16 +102,6 @@ public class MergeSchedulerTests extends OpenSearchTestCase {
         verify(mergeHandler, times(1)).findAndRegisterMerges();
     }
 
-    public void testIsNotFrozenForPreparingTieringState() {
-        MergeHandler mergeHandler = mock(MergeHandler.class);
-        // PREPARING state should NOT freeze — only HOT_TO_WARM freezes.
-        MergeScheduler scheduler = newScheduler(mergeHandler, IndexModule.TieringState.PREPARING);
-        assertFalse("PREPARING tiering state must NOT report frozen", scheduler.isFrozen());
-
-        scheduler.triggerMerges();
-        verify(mergeHandler, times(1)).findAndRegisterMerges();
-    }
-
     public void testIsFrozenReflectsHotToWarmTieringState() {
         MergeHandler mergeHandler = mock(MergeHandler.class);
         MergeScheduler scheduler = newScheduler(mergeHandler, IndexModule.TieringState.HOT_TO_WARM);
@@ -122,20 +114,15 @@ public class MergeSchedulerTests extends OpenSearchTestCase {
         assertFalse("HOT tiering state must not report frozen", scheduler.isFrozen());
     }
 
-    public void testAwaitPendingMergesReturnsWhenNoActiveMerges() {
+    public void testForceMergeAllowedWhenFrozen() throws Exception {
         MergeHandler mergeHandler = mock(MergeHandler.class);
-        MergeScheduler scheduler = newScheduler(mergeHandler, IndexModule.TieringState.HOT);
-        // No merges are running, so this must return promptly without blocking.
-        scheduler.awaitPendingMerges();
-    }
-
-    public void testForceMergeBlockedWhenFrozen() throws Exception {
-        MergeHandler mergeHandler = mock(MergeHandler.class);
+        when(mergeHandler.findForceMerges(1)).thenReturn(Collections.emptyList());
         MergeScheduler scheduler = newScheduler(mergeHandler, IndexModule.TieringState.HOT);
 
         scheduler.freeze();
-        // Force merge while frozen must return early without consulting the handler for merges.
+        // MergeScheduler no longer blocks forceMerge when frozen — the DFA engine's
+        // isFrozenForTiering() guard handles that at a higher level.
         scheduler.forceMerge(1);
-        verify(mergeHandler, never()).getNextMerge();
+        verify(mergeHandler, times(1)).findForceMerges(1);
     }
 }

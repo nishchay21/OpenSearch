@@ -686,8 +686,8 @@ public abstract class TieringService implements ClusterStateListener {
      */
     void validateTieringCancelRequest(final Index index, final IndexMetadata indexMetadata, final ClusterState currentState) {
         // Accept the index as cancellable if it is tracked in the in-memory set OR its persisted tiering
-        // state shows a migration in progress. The latter covers the PREPARING phase (before tier() adds
-        // the index to the in-memory set) and a cluster-manager failover (where the in-memory set is lost).
+        // state shows a migration in progress. The latter covers a cluster-manager failover (where the
+        // in-memory set is lost).
         if (!tieringIndices.contains(index) && !isMigrationInProgress(indexMetadata)) {
             throw new IllegalArgumentException("Index [" + index + "] is not currently undergoing tiering operation");
         }
@@ -703,7 +703,7 @@ public abstract class TieringService implements ClusterStateListener {
 
     /**
      * Returns true if the index's persisted tiering state indicates a migration is in progress
-     * (PREPARING, HOT_TO_WARM, or WARM_TO_HOT), as opposed to a terminal HOT/WARM state.
+     * (HOT_TO_WARM or WARM_TO_HOT), as opposed to a terminal HOT/WARM state.
      */
     private static boolean isMigrationInProgress(final IndexMetadata indexMetadata) {
         if (indexMetadata == null) {

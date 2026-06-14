@@ -195,22 +195,11 @@ public class DataFormatAwareEngine implements Indexer {
      * When {@code true}, tiering-sensitive operations are blocked: primary index ops, merges,
      * refresh, flush, and merge-result catalog commits (each with documented bypasses below).
      * Set in three places: the constructor (freeze-on-open when a shard opens mid-tiering),
-     * {@link #onSettingsChanged} (when INDEX_TIERING_STATE transitions to PREPARING or HOT_TO_WARM),
+     * {@link #onSettingsChanged} (when INDEX_TIERING_STATE transitions to HOT_TO_WARM),
      * and {@link #freezeForTiering()} (explicitly, from the prepare action). Cleared when the state
      * returns to HOT (tiering cancel or prepare failure).
-     * <p>
-     * Only a force flush and the "prepare_tiering" refresh issued during prepare bypass this.
      */
     private volatile boolean frozenForTiering = false;
-
-    /** Source label used by the prepare action's refresh — bypasses the tiering freeze. */
-    private static final String PREPARE_TIERING_SOURCE = "prepare_tiering";
-
-    /**
-     * Refresh source used by an internal flush. A force flush during prepare drives a refresh with
-     * this source, which must proceed even while frozen; hence it also bypasses the tiering freeze.
-     */
-    private static final String FLUSH_SOURCE = "flush";
 
     // TODO Refactor these flush managing activities into FlushManager.
 
@@ -1331,7 +1320,7 @@ public class DataFormatAwareEngine implements Indexer {
      * {@link #onSettingsChanged} on a tiering transition, and by {@link #freezeForTiering()}. The
      * live-settings fallback also returns true for a shard opened mid-tiering (restart/relocation) —
      * though the constructor already covers that — and, more importantly, closes the apply-ordering
-     * gap on a live engine where the index settings already reflect PREPARING/HOT_TO_WARM but
+     * gap on a live engine where the index settings already reflect HOT_TO_WARM but
      * {@link #onSettingsChanged} has not yet flipped the flag, so a request arriving in that window
      * is still blocked. (Requests already past this guard are drained separately by the prepare
      * action acquiring all primary permits.)
@@ -1348,14 +1337,6 @@ public class DataFormatAwareEngine implements Indexer {
     }
 
     /**
-     * Blocks until all in-flight merge operations have completed, ensuring their results are
-     * committed to the catalog before the final sync during tiering preparation.
-     */
-    public void awaitPendingMerges() {
-        mergeScheduler.awaitPendingMerges();
-    }
-
-    /**
      * Registers a listener that fires when all in-flight merges have completed.
      * If merges are already drained, returns true and the caller can proceed immediately.
      * Otherwise, returns false and the listener will fire on the merge thread when
@@ -1366,6 +1347,24 @@ public class DataFormatAwareEngine implements Indexer {
      */
     public boolean onMergesDrained(Runnable listener) {
         return mergeScheduler.onDrained(listener);
+    }
+
+    /**
+     * Returns the number of currently active (in-flight) merge tasks.
+     *
+     * @return the active merge count, or 0 if no merges are running
+     */
+    public int getActiveMergeCount() {
+        return mergeScheduler.getActiveMergeCount();
+    }
+
+    /**
+     * Returns the number of pending (queued but not yet started) merge tasks.
+     *
+     * @return the pending merge count, or 0 if none queued
+     */
+    public int getPendingMergeCount() {
+        return mergeScheduler.getPendingMergeCount();
     }
 
     /** {@inheritDoc} Delegates to {@link #refresh(String)} and always returns {@code true}. */
@@ -2201,17 +2200,21 @@ public class DataFormatAwareEngine implements Indexer {
     }
 
     /**
-     * Explicitly freezes the engine for tiering, closing the race window where the cluster-state
-     * update setting INDEX_TIERING_STATE=PREPARING has not yet propagated to this data node.
-     * Idempotent — a no-op if already frozen.
+     * Explicitly freezes the engine for tiering. Called by {@code TransportPrepareTieringAction}
+     * after flush and remote sync are complete, just before the state transitions to HOT_TO_WARM.
+     * Idempotent — a no-op if already frozen (e.g., via {@link #onSettingsChanged}).
      * <p>
-     * After this call, no new merges can start, in-flight merges are drained, and any late-arriving
-     * merge results are discarded.
+     * After this call:
+     * <ul>
+     *   <li>No new merges will be registered (existing in-flight and pending merges drain to completion)</li>
+     *   <li>Primary indexing operations are rejected with "frozen for tiering"</li>
+     *   <li>{@link #triggerPossibleMerges()} becomes a no-op</li>
+     * </ul>
      */
     public void freezeForTiering() {
-        if (frozenForTiering == false) {
+        if (!frozenForTiering) {
             frozenForTiering = true;
-            mergeScheduler.freeze(); // sets the merge-scheduler frozen flag and drains in-flight merges
+            mergeScheduler.freeze();
             logger.info("Engine explicitly frozen for tiering by prepare action");
         }
     }

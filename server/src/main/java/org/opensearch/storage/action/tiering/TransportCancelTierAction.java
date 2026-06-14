@@ -149,16 +149,14 @@ public class TransportCancelTierAction extends TransportClusterManagerNodeAction
             if (warmToHotTieringService.isIndexBeingTiered(index)) {
                 return warmToHotTieringService;
             }
-            // Fallback to the persisted tiering state. The in-memory set is not yet populated while a
-            // hot-to-warm migration is in its PREPARING phase (before tier() runs), and it is lost on a
-            // cluster-manager failover. Selecting the service from the cluster-state tiering state lets
-            // cancel reach an index that is mid-migration in either of those situations.
+            // Fallback to the persisted tiering state. The in-memory set is lost on a cluster-manager
+            // failover. Selecting the service from the cluster-state tiering state lets cancel reach an
+            // index that is mid-migration in that situation.
             final IndexMetadata indexMetadata = state.metadata().index(index);
             if (indexMetadata != null) {
                 final String tieringState = indexMetadata.getSettings()
                     .get(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.HOT.name());
-                if (IndexModule.TieringState.PREPARING.name().equals(tieringState)
-                    || IndexModule.TieringState.HOT_TO_WARM.name().equals(tieringState)) {
+                if (IndexModule.TieringState.HOT_TO_WARM.name().equals(tieringState)) {
                     return hotToWarmTieringService;
                 }
                 if (IndexModule.TieringState.WARM_TO_HOT.name().equals(tieringState)) {

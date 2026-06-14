@@ -24,8 +24,8 @@ import org.opensearch.common.Priority;
 import org.opensearch.common.inject.Inject;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.core.action.ActionListener;
+import org.opensearch.core.action.support.DefaultShardOperationFailedException;
 import org.opensearch.core.index.Index;
-import org.opensearch.index.IndexModule;
 import org.opensearch.storage.common.tiering.TieringUtils;
 import org.opensearch.storage.tiering.HotToWarmTieringService;
 import org.opensearch.threadpool.ThreadPool;
@@ -108,11 +108,11 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
     }
 
     /**
-     * Step 1: Mark the DFA index as {@code PREPARING} and add a write block to prevent new writes during prepare.
+     * Step 1: Add a write block to the DFA index to prevent new writes during prepare.
      * Both the {@code blocks.write} index setting and the {@link IndexMetadata#INDEX_WRITE_BLOCK} cluster block are
      * applied: the setting persists the block in index metadata (so it survives and can be cleanly reverted on
-     * cancel or failure), while the cluster block enforces it immediately. The {@code PREPARING} tiering state
-     * freezes the engine (blocks merges/refresh/flush) for the duration of prepare.
+     * cancel or failure), while the cluster block enforces it immediately. The engine freeze for the duration of
+     * prepare is applied explicitly by the prepare action (via {@code freezeForTiering()}), not by the tiering state.
      * On success, proceeds to step 2 (prepare tiering).
      */
     private void addWriteBlockAndPrepare(IndexTieringRequest request, ClusterState state, ActionListener<AcknowledgedResponse> listener) {
@@ -128,11 +128,10 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
                     // Block writes before pre-tiering sync. Both the blocks.write setting and the
                     // INDEX_WRITE_BLOCK cluster block are applied: the setting persists in index metadata
                     // (and, unlike read_only_allow_delete, cannot be auto-removed by DiskThresholdMonitor),
-                    // while the cluster block enforces the block immediately. PREPARING freezes the engine.
+                    // while the cluster block enforces the block immediately.
                     Settings.Builder indexSettingsBuilder = Settings.builder()
                         .put(indexMetadata.getSettings())
-                        .put(IndexMetadata.INDEX_BLOCKS_WRITE_SETTING.getKey(), true)
-                        .put(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.PREPARING.name());
+                        .put(IndexMetadata.INDEX_BLOCKS_WRITE_SETTING.getKey(), true);
 
                     IndexMetadata.Builder indexMetadataBuilder = IndexMetadata.builder(indexMetadata)
                         .settings(indexSettingsBuilder)
@@ -166,8 +165,7 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
      * Step 2: Execute the prepare tiering action (flush + refresh + waitForRemoteStoreSync) on primary shards.
      * Retries up to MAX_PREPARE_RETRIES times on shard failures before giving up.
      * On success, proceeds to step 3 (tier).
-     * On final failure, rolls back the PREPARING state (removes the write block and resets the tiering
-     * state to HOT) to avoid leaving the index in a stuck, write-blocked, frozen state.
+     * On final failure, removes the write block to avoid leaving the index in a stuck, write-blocked state.
      */
     private void executePrepareTiering(
         IndexTieringRequest request,
@@ -195,15 +193,69 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
                         executePrepareTiering(request, state, listener, attempt + 1);
                         return;
                     }
-                    String errorMsg = "Pre-tiering sync failed for index ["
-                        + request.getIndex()
-                        + "] after "
-                        + MAX_PREPARE_RETRIES
-                        + " attempts: "
-                        + broadcastResponse.getFailedShards()
-                        + " shard(s) failed. Please retry the tiering request.";
+                    // Build a targeted error message based on failure type.
+                    // Note: MergeDrainTimeoutException may arrive deserialized as a generic exception
+                    // in mixed-version clusters, so we check both instanceof and message prefix.
+                    DefaultShardOperationFailedException[] failures = broadcastResponse.getShardFailures();
+                    MergeDrainTimeoutException mergeTimeoutSample = null;
+                    int mergeTimeoutCount = 0;
+                    int otherFailureCount = 0;
+
+                    for (DefaultShardOperationFailedException f : failures) {
+                        Throwable cause = f.getCause();
+                        // Unwrap to find the real cause
+                        Throwable realCause = cause != null ? cause.getCause() : null;
+                        if (realCause instanceof MergeDrainTimeoutException mdte) {
+                            mergeTimeoutCount++;
+                            if (mergeTimeoutSample == null) mergeTimeoutSample = mdte;
+                        } else if (isMergeDrainTimeout(cause) || isMergeDrainTimeout(realCause)) {
+                            // Fallback: message-based detection for mixed-version clusters
+                            mergeTimeoutCount++;
+                        } else {
+                            otherFailureCount++;
+                        }
+                    }
+
+                    String errorMsg;
+                    if (mergeTimeoutSample != null && otherFailureCount == 0) {
+                        // All failures are merge drain timeouts — give targeted advice
+                        errorMsg = MergeDrainTimeoutException.userFacingSummary(mergeTimeoutCount, mergeTimeoutSample);
+                    } else if (mergeTimeoutCount > 0 && otherFailureCount == 0) {
+                        // All merge timeouts but no typed exception (mixed-version fallback)
+                        errorMsg = "Tiering preparation timed out: "
+                            + mergeTimeoutCount
+                            + " shard(s) still have active merges. "
+                            + "Increase cluster.tiering.prepare_timeout or retry later.";
+                    } else if (mergeTimeoutCount > 0) {
+                        // Mixed failures
+                        errorMsg = "Pre-tiering sync failed for index ["
+                            + request.getIndex()
+                            + "] after "
+                            + MAX_PREPARE_RETRIES
+                            + " attempts: "
+                            + mergeTimeoutCount
+                            + " shard(s) timed out waiting for merges, "
+                            + otherFailureCount
+                            + " shard(s) failed for other reasons. "
+                            + "Consider increasing cluster.tiering.prepare_timeout or retry later.";
+                    } else {
+                        // No merge timeouts — generic message with first failure details
+                        String firstFailure = failures.length == 0
+                            ? "unknown"
+                            : (failures[0].getCause() != null ? failures[0].getCause().getMessage() : "unknown");
+                        errorMsg = "Pre-tiering sync failed for index ["
+                            + request.getIndex()
+                            + "] after "
+                            + MAX_PREPARE_RETRIES
+                            + " attempts: "
+                            + broadcastResponse.getFailedShards()
+                            + " shard(s) failed. "
+                            + "First failure: "
+                            + firstFailure
+                            + ". Please retry.";
+                    }
                     logger.error(errorMsg);
-                    rollbackPreparing(request.getIndex());
+                    removeWriteBlock(request.getIndex());
                     listener.onFailure(new IllegalStateException(errorMsg));
                     return;
                 }
@@ -211,7 +263,7 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
                 try {
                     TransportHotToWarmTierAction.super.clusterManagerOperation(request, state, listener);
                 } catch (Exception e) {
-                    rollbackPreparing(request.getIndex());
+                    removeWriteBlock(request.getIndex());
                     listener.onFailure(e);
                 }
             }
@@ -235,24 +287,29 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
                     + MAX_PREPARE_RETRIES
                     + " attempts. Please retry.";
                 logger.error(errorMsg, e);
-                rollbackPreparing(request.getIndex());
+                removeWriteBlock(request.getIndex());
                 listener.onFailure(new IllegalStateException(errorMsg, e));
             }
         });
     }
 
     /**
-     * Rolls back the {@code PREPARING} transition on prepare failure: removes the write block and, if the index
-     * is still in {@code PREPARING}, resets the tiering state back to {@code HOT} so the engine unfreezes and
-     * normal indexing/merges resume. The tiering state is only reset when still {@code PREPARING} to avoid
-     * clobbering a state that already advanced to {@code HOT_TO_WARM} (e.g. when {@code tier()} partially
-     * succeeded before throwing).
-     * Best-effort — if this fails, the index may remain write-blocked and/or frozen in {@code PREPARING};
-     * both can be reverted manually via index settings.
+     * Checks if a throwable is a merge drain timeout based on its message.
+     * Used as a fallback for mixed-version clusters where the typed exception
+     * may have been deserialized as a generic exception.
      */
-    private void rollbackPreparing(String indexName) {
+    private static boolean isMergeDrainTimeout(Throwable t) {
+        return t != null && t.getMessage() != null && t.getMessage().contains("timed out waiting for merges to drain");
+    }
+
+    /**
+     * Removes the write block from the index.
+     * Called on prepare failure to avoid leaving the index in a stuck write-blocked state.
+     * Best-effort — if this fails, the user can manually remove the block via index settings.
+     */
+    private void removeWriteBlock(String indexName) {
         clusterService.submitStateUpdateTask(
-            "rollback-preparing-for-tiering [" + indexName + "]",
+            "remove-write-block-for-tiering [" + indexName + "]",
             new ClusterStateUpdateTask(Priority.URGENT) {
                 @Override
                 public ClusterState execute(ClusterState currentState) {
@@ -263,14 +320,6 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
                     Settings.Builder indexSettingsBuilder = Settings.builder()
                         .put(indexMetadata.getSettings())
                         .put(IndexMetadata.INDEX_BLOCKS_WRITE_SETTING.getKey(), false);
-
-                    // Only revert the tiering state if it is still PREPARING. If tier() already advanced it to
-                    // HOT_TO_WARM, leave it untouched so we don't corrupt a partially-succeeded migration.
-                    String currentTieringState = indexMetadata.getSettings()
-                        .get(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.HOT.name());
-                    if (IndexModule.TieringState.PREPARING.name().equals(currentTieringState)) {
-                        indexSettingsBuilder.put(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.HOT.name());
-                    }
 
                     IndexMetadata.Builder indexMetadataBuilder = IndexMetadata.builder(indexMetadata)
                         .settings(indexSettingsBuilder)
@@ -286,17 +335,16 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
                 @Override
                 public void onFailure(String source, Exception e) {
                     logger.warn(
-                        () -> "Failed to roll back PREPARING state for index ["
+                        () -> "Failed to remove write block for index ["
                             + indexName
-                            + "] after tiering failure. The write block and/or PREPARING tiering state may "
-                            + "need to be reverted manually via index settings.",
+                            + "] after tiering failure. The block can be removed manually via index settings.",
                         e
                     );
                 }
 
                 @Override
                 public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
-                    logger.info("Rolled back PREPARING state (removed write block, reset tiering state) for index [{}]", indexName);
+                    logger.info("Write block removed for index [{}] after tiering failure", indexName);
                 }
             }
         );

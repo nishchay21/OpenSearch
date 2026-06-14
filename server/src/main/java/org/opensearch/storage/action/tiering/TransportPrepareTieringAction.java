@@ -185,27 +185,31 @@ public class TransportPrepareTieringAction extends TransportBroadcastByNodeActio
         try {
             permit = acquirePrimaryPermits(indexShard, shardRouting);
         } catch (IOException e) {
-            //todo: add log
+            logger.debug("Failed to acquire primary permits for shard [{}] during tiering prepare — will retry", shardRouting.shardId(), e);
             listener.onFailure(e);
             return;
         }
 
         indexShard.freezeForTiering();
 
-        // Timeout: prefer request-level timeout if explicitly set, otherwise use the cluster setting.
-        // The cluster setting (default 10m) gives enough headroom for large indices with slow remote uploads.
+        // Timeout: use 80% of the transport timeout so we fail with a meaningful message
+        // before the transport channel times out with a generic error. This allows the caller to retry.
         TimeValue mergeTimeout = request.timeout() != null ? request.timeout() : prepareTieringTimeout;
+        long mergeTimeoutMillis = (long) (mergeTimeout.millis() * 0.8);
+        TimeValue effectiveTimeout = TimeValue.timeValueMillis(mergeTimeoutMillis);
         AtomicBoolean completed = new AtomicBoolean(false);
 
-        // Schedule timeout — if merges don't drain in time, fail the operation
+        // Schedule timeout — fires before transport timeout with diagnostic info about pending merges
         Scheduler.ScheduledCancellable timeout = threadPool.schedule(() -> {
             if (completed.compareAndSet(false, true)) {
+                int activeMerges = indexShard.getActiveMergeCount();
+                int pendingMerges = indexShard.getPendingMergeCount();
                 permit.close();
-                listener.onFailure(new IOException(
-                    "Timed out waiting for merges to drain on shard [" + shardRouting.shardId() + "]"
-                ));
+                listener.onFailure(
+                    new MergeDrainTimeoutException(shardRouting.shardId(), activeMerges, pendingMerges, mergeTimeout.toString())
+                );
             }
-        }, mergeTimeout, ThreadPool.Names.GENERIC);
+        }, effectiveTimeout, ThreadPool.Names.GENERIC);
 
         // Non-blocking merge wait
         boolean alreadyDrained = indexShard.onMergesDrained(() -> {

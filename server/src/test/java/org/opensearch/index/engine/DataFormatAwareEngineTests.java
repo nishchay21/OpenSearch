@@ -3312,9 +3312,9 @@ public class DataFormatAwareEngineTests extends OpenSearchTestCase {
     }
 
     public void testConstructorFreezesWhenOpenedMidTiering() throws IOException {
-        try (DataFormatAwareEngine engine = createDFAEngineWithTieringState(store, createTempDir(), IndexModule.TieringState.PREPARING)) {
+        try (DataFormatAwareEngine engine = createDFAEngineWithTieringState(store, createTempDir(), IndexModule.TieringState.HOT_TO_WARM)) {
             engine.translogManager().recoverFromTranslog(ignore -> 0, engine.getProcessedLocalCheckpoint(), Long.MAX_VALUE);
-            // Opened with INDEX_TIERING_STATE=PREPARING — engine must be frozen on construction,
+            // Opened with INDEX_TIERING_STATE=HOT_TO_WARM — engine must be frozen on construction,
             // before any onSettingsChanged call.
             IllegalStateException e = expectThrows(
                 IllegalStateException.class,

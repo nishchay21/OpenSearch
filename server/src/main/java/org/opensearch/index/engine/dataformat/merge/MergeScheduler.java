@@ -226,20 +226,6 @@ public class MergeScheduler {
     }
 
     /**
-     * Blocks until all in-flight merge tasks complete.
-     */
-    public void awaitPendingMerges() {
-        while (activeMerges.get() > 0 || mergeHandler.hasPendingMerges()) {
-            try {
-                Thread.sleep(100);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            }
-        }
-    }
-
-    /**
      * Registers a listener that fires when all active merges complete.
      * If already drained (no active merges and no pending), returns true immediately
      * and the caller can proceed synchronously. Otherwise, adds the listener to the
@@ -270,6 +256,24 @@ public class MergeScheduler {
      */
     public void shutdown() {
         isShutdown.set(true);
+    }
+
+    /**
+     * Returns the number of currently active (in-flight) merge tasks.
+     *
+     * @return the active merge count
+     */
+    public int getActiveMergeCount() {
+        return activeMerges.get();
+    }
+
+    /**
+     * Returns the number of pending (queued but not yet started) merge tasks.
+     *
+     * @return the pending merge count
+     */
+    public int getPendingMergeCount() {
+        return mergeHandler.getPendingMergeCount();
     }
 
     /**
