@@ -217,6 +217,7 @@ public class MergeScheduler {
      */
     public void unfreeze() {
         frozen.set(false);
+        triggerMerges();
     }
 
     /**
@@ -249,19 +250,18 @@ public class MergeScheduler {
 
     /**
      * Registers a listener that fires when all active merges complete.
-     * If already drained (no active merges and no pending), returns true immediately
-     * and the caller can proceed synchronously. Otherwise, adds the listener to the
-     * list and returns false — all registered listeners will be invoked on the merge
-     * thread when the last merge finishes.
+     * If already drained (no active merges and no pending), fires the listener immediately
+     * inline. Otherwise, adds the listener to the list — all registered listeners will be
+     * invoked on the merge thread when the last merge finishes.
      * <p>
      * Multiple listeners can be registered concurrently (thread-safe via CopyOnWriteArrayList).
      *
      * @param listener the callback to fire when merges are drained
-     * @return true if already drained (caller can proceed), false if listener was registered
      */
-    public boolean onDrained(Runnable listener) {
+    public void onDrained(Runnable listener) {
         if (activeMerges.get() == 0 && !mergeHandler.hasPendingMerges()) {
-            return true; // already drained
+            listener.run();
+            return;
         }
         onDrainedListeners.add(listener);
         // Double-check after adding — merges may have finished between the check and the add
@@ -270,7 +270,6 @@ public class MergeScheduler {
                 listener.run();
             }
         }
-        return false; // will callback later
     }
 
     /**
@@ -363,6 +362,7 @@ public class MergeScheduler {
                 activeMerges.decrementAndGet();
                 // Fire all drain listeners if all merges completed and none pending
                 if (activeMerges.get() == 0 && !mergeHandler.hasPendingMerges() && !onDrainedListeners.isEmpty()) {
+                    assert isFrozen() : "Expected scheduler to be frozen when drain listeners fire";
                     List<Runnable> listeners = List.copyOf(onDrainedListeners);
                     onDrainedListeners.clear();
                     for (Runnable listener : listeners) {

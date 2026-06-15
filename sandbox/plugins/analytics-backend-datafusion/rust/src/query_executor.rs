@@ -20,8 +20,6 @@ use datafusion::{
     prelude::*,
 };
 use datafusion::datasource::file_format::parquet::ParquetFormat;
-use datafusion::execution::cache::cache_manager::{CacheManagerConfig, CachedFileList};
-use datafusion::execution::cache::{CacheAccessor, DefaultListFilesCache};
 use datafusion_substrait::logical_plan::consumer::from_substrait_plan;
 use log::error;
 use object_store::ObjectMeta;
@@ -55,23 +53,7 @@ pub async fn execute_query(
     phantom_corrector: Option<Arc<crate::phantom_corrector::PhantomCorrector>>,
 ) -> Result<i64, DataFusionError> {
     // Build per-query RuntimeEnv with list-files cache pre-populated.
-    let runtime_env = build_query_runtime_env(runtime, &table_path, object_metas.as_ref())?;
-
-    // If a per-query memory pool is provided, rebuild with it overlaid.
-    // The per-query pool wraps the global pool, so global limits are still enforced.
-    let runtime_env = if let Some(pool) = query_memory_pool {
-        Arc::from(
-            RuntimeEnvBuilder::from_runtime_env(&runtime_env)
-                .with_memory_pool(pool)
-                .build()
-                .map_err(|e| {
-                    error!("Failed to build runtime env with query pool: {}", e);
-                    e
-                })?,
-        )
-    } else {
-        runtime_env
-    };
+    let runtime_env = crate::runtime_helpers::build_query_runtime_env(runtime, &table_path, object_metas.as_ref(), query_memory_pool)?;
 
     // Register shard-specific object store on file:// scheme for this query.
     // Routes reads through TieredObjectStore (local + remote) or default LocalFileSystem.
@@ -379,35 +361,6 @@ pub async fn execute_with_context(
 }
 
 // ── Shared helpers ──────────────────────────────────────────────────────────
-
-/// Build a per-query RuntimeEnv sharing global caches, with a fresh list-files
-/// cache pre-populated for the given table path and object metas.
-pub fn build_query_runtime_env(
-    runtime: &DataFusionRuntime,
-    table_path: &ListingTableUrl,
-    object_metas: &[ObjectMeta],
-) -> Result<Arc<datafusion::execution::runtime_env::RuntimeEnv>, DataFusionError> {
-    let list_file_cache = Arc::new(DefaultListFilesCache::default());
-    let table_scoped_path = datafusion::execution::cache::TableScopedPath {
-        table: None,
-        path: table_path.prefix().clone(),
-    };
-    list_file_cache.put(&table_scoped_path, CachedFileList::new(object_metas.to_vec()));
-
-    let runtime_env = RuntimeEnvBuilder::from_runtime_env(&runtime.runtime_env)
-        .with_cache_manager(
-            CacheManagerConfig::default()
-                .with_list_files_cache(Some(list_file_cache))
-                .with_file_metadata_cache(Some(
-                    runtime.runtime_env.cache_manager.get_file_metadata_cache(),
-                ))
-                .with_files_statistics_cache(
-                    runtime.runtime_env.cache_manager.get_file_statistic_cache(),
-                ),
-        )
-        .build()?;
-    Ok(Arc::from(runtime_env))
-}
 
 /// Build ShardFileInfo list from object metas by reading parquet footers.
 /// Each file gets a cumulative `row_base` and per-RG row counts.

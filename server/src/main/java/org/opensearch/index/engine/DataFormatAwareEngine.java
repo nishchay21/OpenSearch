@@ -1285,6 +1285,25 @@ public class DataFormatAwareEngine implements Indexer {
         //
         // Unfreeze logic covers both cancel (HOT_TO_WARM → HOT) and prepare failure
         // (PREPARING → HOT) to ensure merge scheduler resumes.
+        updateTieringFreezeState();
+    }
+
+    /** {@inheritDoc} Always returns {@code true} — a refresh is always considered needed. */
+    @Override
+    public boolean refreshNeeded() {
+        // A refresh is needed if there are operations since the last refresh
+        return true;
+    }
+
+    /**
+     * Detects tiering state transitions and freezes/unfreezes the engine accordingly.
+     * Only freezes for HOT_TO_WARM (actual data migration in progress).
+     * Does NOT freeze for PREPARING — that state is transient and the prepare action
+     * explicitly calls freezeForTiering() when ready.
+     * Unfreeze logic covers both cancel (HOT_TO_WARM → HOT) and prepare failure
+     * (PREPARING → HOT) to ensure merge scheduler resumes.
+     */
+    private void updateTieringFreezeState() {
         String tieringStateStr = engineConfig.getIndexSettings()
             .getSettings()
             .get(IndexModule.INDEX_TIERING_STATE.getKey(), IndexModule.TieringState.HOT.name());
@@ -1313,13 +1332,6 @@ public class DataFormatAwareEngine implements Indexer {
         if (!isTieringActive && mergeScheduler.isFrozen()) {
             mergeScheduler.unfreeze();
         }
-    }
-
-    /** {@inheritDoc} Always returns {@code true} — a refresh is always considered needed. */
-    @Override
-    public boolean refreshNeeded() {
-        // A refresh is needed if there are operations since the last refresh
-        return true;
     }
 
     /**
@@ -1370,15 +1382,14 @@ public class DataFormatAwareEngine implements Indexer {
 
     /**
      * Registers a listener that fires when all in-flight merges have completed.
-     * If merges are already drained, returns true and the caller can proceed immediately.
-     * Otherwise, returns false and the listener will fire on the merge thread when
+     * If merges are already drained, fires the listener immediately inline.
+     * Otherwise, the listener will fire on the merge thread when
      * the last merge finishes.
      *
      * @param listener the callback to fire when merges are drained
-     * @return true if already drained (caller can proceed), false if listener was registered
      */
-    public boolean onMergesDrained(Runnable listener) {
-        return mergeScheduler.onDrained(listener);
+    public void onMergesDrained(Runnable listener) {
+        mergeScheduler.onDrained(listener);
     }
 
     /**

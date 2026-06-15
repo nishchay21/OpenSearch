@@ -112,16 +112,6 @@ public class TransportPrepareTieringAction extends TransportBroadcastByNodeActio
         return true;
     }
 
-    /**
-     * Use GENERIC thread pool for async shard dispatch. Threads are freed immediately
-     * because the actual work (flush + sync) happens asynchronously via the merge drain
-     * listener callback — no thread ever blocks waiting for merges.
-     */
-    @Override
-    protected String asyncShardOperationThreadPool() {
-        return ThreadPool.Names.GENERIC;
-    }
-
     @Override
     protected EmptyResult readShardResult(StreamInput in) throws IOException {
         return EmptyResult.readEmptyResultFrom(in);
@@ -203,39 +193,30 @@ public class TransportPrepareTieringAction extends TransportBroadcastByNodeActio
             if (completed.compareAndSet(false, true)) {
                 int activeMerges = indexShard.getActiveMergeCount();
                 int pendingMerges = indexShard.getPendingMergeCount();
-                permit.close();
-                listener.onFailure(
-                    new MergeDrainTimeoutException(shardRouting.shardId(), activeMerges, pendingMerges, mergeTimeout.toString())
-                );
+                try {
+                    listener.onFailure(
+                        new MergeDrainTimeoutException(shardRouting.shardId(), activeMerges, pendingMerges, mergeTimeout.toString())
+                    );
+                } finally {
+                    permit.close();
+                }
             }
         }, effectiveTimeout, ThreadPool.Names.GENERIC);
 
         // Non-blocking merge wait
-        boolean alreadyDrained = indexShard.onMergesDrained(() -> {
+        indexShard.onMergesDrained(() -> {
             if (completed.compareAndSet(false, true)) {
                 timeout.cancel();
                 try {
                     completeSyncAndFlush(indexShard, shardRouting);
-                    permit.close();
                     listener.onResponse(EmptyResult.INSTANCE);
                 } catch (Exception e) {
-                    permit.close();
                     listener.onFailure(e);
+                } finally {
+                    permit.close();
                 }
             }
         });
-
-        if (alreadyDrained && completed.compareAndSet(false, true)) {
-            timeout.cancel();
-            try {
-                completeSyncAndFlush(indexShard, shardRouting);
-                permit.close();
-                listener.onResponse(EmptyResult.INSTANCE);
-            } catch (Exception e) {
-                permit.close();
-                listener.onFailure(e);
-            }
-        }
         // Thread returns immediately — not blocked!
     }
 

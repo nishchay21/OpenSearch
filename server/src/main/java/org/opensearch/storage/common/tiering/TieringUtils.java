@@ -136,7 +136,7 @@ public class TieringUtils {
     /** Setting for prepare tiering timeout. Dynamically updatable via cluster settings API. */
     public static final Setting<TimeValue> PREPARE_TIERING_TIMEOUT = Setting.timeSetting(
         PREPARE_TIERING_TIMEOUT_KEY,
-        TimeValue.timeValueSeconds(90),
+        TimeValue.timeValueSeconds(300),
         TimeValue.timeValueSeconds(30),
         Setting.Property.Dynamic,
         Setting.Property.NodeScope

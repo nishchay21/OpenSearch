@@ -17,11 +17,8 @@ use datafusion::{
     common::DataFusionError,
     datasource::file_format::parquet::ParquetFormat,
     datasource::listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
-    execution::cache::cache_manager::{CacheManagerConfig, CachedFileList},
-    execution::cache::{CacheAccessor, DefaultListFilesCache},
     execution::context::SessionContext,
     execution::memory_pool::MemoryPool,
-    execution::runtime_env::RuntimeEnvBuilder,
     execution::SessionStateBuilder,
     prelude::*,
 };
@@ -146,35 +143,12 @@ pub async unsafe fn create_session_context(
         .memory_pool()
         .map(|p| p as Arc<dyn MemoryPool>);
 
-    let list_file_cache = Arc::new(DefaultListFilesCache::default());
-    list_file_cache.put(
-        &datafusion::execution::cache::TableScopedPath {
-            table: None,
-            path: shard_view.table_path.prefix().clone(),
-        },
-        CachedFileList::new(shard_view.object_metas.as_ref().clone()),
-    );
-
-    let mut runtime_env_builder = RuntimeEnvBuilder::from_runtime_env(&runtime.runtime_env)
-        .with_cache_manager(
-            CacheManagerConfig::default()
-                .with_list_files_cache(Some(list_file_cache))
-                .with_file_metadata_cache(Some(
-                    runtime.runtime_env.cache_manager.get_file_metadata_cache(),
-                ))
-                .with_metadata_cache_limit(
-                    runtime.runtime_env.cache_manager.get_metadata_cache_limit(),
-                )
-                .with_files_statistics_cache(
-                    runtime.runtime_env.cache_manager.get_file_statistic_cache(),
-                ),
-        );
-
-    if let Some(pool) = query_memory_pool {
-        runtime_env_builder = runtime_env_builder.with_memory_pool(pool);
-    }
-
-    let runtime_env = runtime_env_builder.build().map_err(|e| {
+    let runtime_env = crate::runtime_helpers::build_query_runtime_env(
+        runtime,
+        &shard_view.table_path,
+        shard_view.object_metas.as_ref(),
+        query_memory_pool,
+    ).map_err(|e| {
         error!("create_session_context: failed to build runtime env: {}", e);
         e
     })?;
@@ -207,7 +181,7 @@ pub async unsafe fn create_session_context(
 
     let mut state_builder = SessionStateBuilder::new()
         .with_config(config)
-        .with_runtime_env(Arc::from(runtime_env))
+        .with_runtime_env(runtime_env)
         .with_default_features()
         .with_physical_optimizer_rules(crate::agg_mode::physical_optimizer_rules_without_combine());
 

@@ -10,13 +10,20 @@ package org.opensearch.storage.action.tiering;
 
 import org.opensearch.action.support.broadcast.BroadcastRequest;
 import org.opensearch.core.common.io.stream.StreamInput;
+import org.opensearch.core.tasks.TaskId;
+import org.opensearch.rest.action.admin.cluster.ClusterAdminTask;
+import org.opensearch.tasks.Task;
 
 import java.io.IOException;
+import java.util.Map;
 
 /**
  * Request for pre-tiering sync operations on DFA indices.
  * Targets a specific index to flush, refresh, and sync to remote store
  * before tiering proceeds.
+ * <p>
+ * Creates a {@link ClusterAdminTask} so the prepare operation is cancellable
+ * via the {@code _tasks} API and auto-cancels after the configured timeout.
  *
  * @opensearch.internal
  */
@@ -39,5 +46,10 @@ public class PrepareTieringRequest extends BroadcastRequest<PrepareTieringReques
      */
     public PrepareTieringRequest(StreamInput in) throws IOException {
         super(in);
+    }
+
+    @Override
+    public Task createTask(long id, String type, String action, TaskId parentTaskId, Map<String, String> headers) {
+        return new ClusterAdminTask(id, type, action, parentTaskId, headers, timeout());
     }
 }

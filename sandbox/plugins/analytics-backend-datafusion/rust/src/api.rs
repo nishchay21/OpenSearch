@@ -705,11 +705,13 @@ pub async unsafe fn fetch_by_row_ids(
 ) -> Result<i64, DataFusionError> {
     use crate::indexed_table::row_selection::build_row_selection_with_min_skip_run;
     use crate::indexed_table::segment_info::build_segments;
-    use crate::query_executor::{build_query_runtime_env, store_url_from_table_path, wrap_stream_as_handle};
+    use crate::query_executor::{store_url_from_table_path, wrap_stream_as_handle};
 
     // ── 1. Build RuntimeEnv + SessionContext ──
 
-    let runtime_env = build_query_runtime_env(runtime, &shard_view.table_path, shard_view.object_metas.as_ref())?;
+    let runtime_env = crate::runtime_helpers::build_query_runtime_env(
+        runtime, &shard_view.table_path, shard_view.object_metas.as_ref(), None,
+    )?;
 
     // Register shard-specific object store on file:// scheme for this query.
     runtime_env.register_object_store(
@@ -1077,8 +1079,6 @@ pub unsafe fn sql_to_substrait(
 ) -> Result<Vec<u8>, DataFusionError> {
     use datafusion::datasource::file_format::parquet::ParquetFormat;
     use datafusion::datasource::listing::{ListingOptions, ListingTable, ListingTableConfig};
-    use datafusion::execution::cache::cache_manager::{CacheManagerConfig, CachedFileList};
-    use datafusion::execution::cache::{CacheAccessor, DefaultListFilesCache};
     use datafusion_substrait::logical_plan::producer::to_substrait_plan;
     use prost::Message;
 
@@ -1089,33 +1089,16 @@ pub unsafe fn sql_to_substrait(
     let table_name = table_name.to_string();
 
     manager.io_runtime.block_on(async {
-        let list_file_cache = Arc::new(DefaultListFilesCache::default());
-        list_file_cache.put(
-            &datafusion::execution::cache::TableScopedPath {
-                table: None,
-                path: table_path.prefix().clone(),
-            },
-            CachedFileList::new(object_metas.as_ref().clone()),
-        );
-        let runtime_env = RuntimeEnvBuilder::from_runtime_env(&runtime.runtime_env)
-            .with_cache_manager(
-                CacheManagerConfig::default()
-                    .with_list_files_cache(Some(list_file_cache))
-                    .with_file_metadata_cache(Some(
-                        runtime.runtime_env.cache_manager.get_file_metadata_cache(),
-                    ))
-                    .with_metadata_cache_limit(
-                        runtime.runtime_env.cache_manager.get_metadata_cache_limit(),
-                    )
-                    .with_files_statistics_cache(
-                        runtime.runtime_env.cache_manager.get_file_statistic_cache(),
-                    ),
-            )
-            .build()?;
+        let runtime_env = crate::runtime_helpers::build_query_runtime_env(
+            runtime,
+            &table_path,
+            object_metas.as_ref(),
+            None,
+        )?;
 
         let state = SessionStateBuilder::new()
             .with_config(SessionConfig::new())
-            .with_runtime_env(Arc::from(runtime_env))
+            .with_runtime_env(runtime_env)
             .with_default_features()
             .build();
         let ctx = datafusion::prelude::SessionContext::new_with_state(state);

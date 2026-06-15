@@ -53,9 +53,9 @@ public class MergeSchedulerOnDrainedTests extends OpenSearchTestCase {
     }
 
     /**
-     * When no merges are active or pending, onDrained should return true immediately.
+     * When no merges are active or pending, onDrained should fire the listener immediately.
      */
-    public void testOnDrained_AlreadyDrained_ReturnsTrue() {
+    public void testOnDrained_AlreadyDrained_FiresListenerImmediately() {
         MergeHandler mockHandler = mock(MergeHandler.class);
         when(mockHandler.hasPendingMerges()).thenReturn(false);
 
@@ -64,16 +64,15 @@ public class MergeSchedulerOnDrainedTests extends OpenSearchTestCase {
         MergeScheduler scheduler = new MergeScheduler(mockHandler, (result, merge) -> {}, () -> {}, testShardId, indexSettings, threadPool);
 
         AtomicBoolean listenerCalled = new AtomicBoolean(false);
-        boolean alreadyDrained = scheduler.onDrained(() -> listenerCalled.set(true));
+        scheduler.onDrained(() -> listenerCalled.set(true));
 
-        assertTrue("Should return true when already drained", alreadyDrained);
-        assertFalse("Listener should not be called when already drained", listenerCalled.get());
+        assertTrue("Listener should be called immediately when already drained", listenerCalled.get());
     }
 
     /**
-     * When merges are pending, onDrained should return false (listener registered).
+     * When merges are pending, onDrained should register the listener (not fire immediately).
      */
-    public void testOnDrained_MergesPending_ReturnsFalse() {
+    public void testOnDrained_MergesPending_RegistersListener() {
         MergeHandler mockHandler = mock(MergeHandler.class);
         when(mockHandler.hasPendingMerges()).thenReturn(true);
 
@@ -82,10 +81,9 @@ public class MergeSchedulerOnDrainedTests extends OpenSearchTestCase {
         MergeScheduler scheduler = new MergeScheduler(mockHandler, (result, merge) -> {}, () -> {}, testShardId, indexSettings, threadPool);
 
         AtomicBoolean listenerCalled = new AtomicBoolean(false);
-        boolean alreadyDrained = scheduler.onDrained(() -> listenerCalled.set(true));
+        scheduler.onDrained(() -> listenerCalled.set(true));
 
-        assertFalse("Should return false when merges are pending", alreadyDrained);
-        assertFalse("Listener should not be called yet", listenerCalled.get());
+        assertFalse("Listener should not be called yet when merges are pending", listenerCalled.get());
     }
 
     /**
@@ -178,14 +176,13 @@ public class MergeSchedulerOnDrainedTests extends OpenSearchTestCase {
         // The TOCTOU double-check path should fire the new listener immediately
         when(mockHandler.hasPendingMerges()).thenReturn(false);
 
-        // Register a 4th listener — this should fire immediately via the double-check
+        // Register a 4th listener — this should fire immediately via the inline check
         AtomicBoolean fourthFired = new AtomicBoolean(false);
-        boolean alreadyDrained = scheduler.onDrained(() -> fourthFired.set(true));
+        scheduler.onDrained(() -> fourthFired.set(true));
 
         // Since activeMerges is 0 (we never started any) and hasPendingMerges is now false,
-        // it should return true (already drained)
-        assertTrue("Should return true when already drained", alreadyDrained);
-        assertFalse("4th listener should not be called when already drained (returns true)", fourthFired.get());
+        // the listener fires immediately inline
+        assertTrue("4th listener should be called immediately when already drained", fourthFired.get());
     }
 
     /**
@@ -207,11 +204,9 @@ public class MergeSchedulerOnDrainedTests extends OpenSearchTestCase {
         when(mockHandler.hasPendingMerges()).thenReturn(true).thenReturn(false);
 
         AtomicBoolean listenerFired = new AtomicBoolean(false);
-        boolean alreadyDrained = scheduler.onDrained(() -> listenerFired.set(true));
+        scheduler.onDrained(() -> listenerFired.set(true));
 
-        // Should return false (listener was registered, not immediately drained at first check)
-        assertFalse("Should return false since first check showed pending merges", alreadyDrained);
-        // But the listener should have fired via the double-check path
+        // The listener should have fired via the double-check path
         assertTrue("Listener should fire via the double-check after add", listenerFired.get());
     }
 
@@ -342,24 +337,59 @@ public class MergeSchedulerOnDrainedTests extends OpenSearchTestCase {
         // Re-stub getNextMerge (reset)
         when(mockHandler.getNextMerge()).thenReturn(oneMerge, (OneMerge) null);
 
+        // Use a latch to control merge timing: the merge blocks until we release it,
+        // allowing us to freeze the scheduler while the merge is in-flight.
+        CountDownLatch mergeStarted = new CountDownLatch(1);
+        CountDownLatch mergeCanProceed = new CountDownLatch(1);
+        when(mockHandler.doMerge(oneMerge)).thenAnswer(invocation -> {
+            mergeStarted.countDown(); // Signal that merge has started
+            mergeCanProceed.await();  // Wait until test allows merge to proceed
+            return mockMergeResult;
+        });
+
         CountDownLatch latch = new CountDownLatch(1);
         AtomicBoolean listenerFired = new AtomicBoolean(false);
 
-        // Register listener - should return false (not yet drained, hasPendingMerges is true)
-        boolean alreadyDrained = scheduler.onDrained(() -> {
+        // Register listener - should not fire yet (hasPendingMerges is true)
+        scheduler.onDrained(() -> {
             listenerFired.set(true);
             latch.countDown();
         });
 
-        assertFalse("Should not be already drained before merge starts", alreadyDrained);
         assertFalse("Listener should not have fired yet", listenerFired.get());
 
         // Trigger merges - this calls findAndRegisterMerges() then executeMerge() which calls submitMergeTask()
         scheduler.triggerMerges();
 
+        // Wait for the merge to actually start on the thread pool
+        assertTrue("Merge should have started", mergeStarted.await(5, TimeUnit.SECONDS));
+
+        // Now freeze the scheduler — the merge is in-flight, so frozen flag is set
+        // but we don't call freeze() (which would block). Instead, simulate what
+        // production does: the frozen flag is already set before the merge completes.
+        // We can't call freeze() because it calls awaitPendingMerges() which blocks.
+        // In production, freeze() is called and blocks until merge completes, setting
+        // the flag first. Here we replicate just the flag setting.
+        // Actually, let's just not use freeze() — directly verify that the production
+        // invariant holds by checking isFrozen() returns true due to settings.
+        // Simplest: use a scheduler that's frozen via the tiering state setting.
+        // But that's complex. Let's just release the merge from another thread after
+        // calling freeze() (which blocks).
+        Thread freezeThread = new Thread(() -> scheduler.freeze());
+        freezeThread.start();
+
+        // Give freeze() time to set the frozen flag (it sets frozen first, then blocks on await)
+        Thread.sleep(50);
+
+        // Release the merge — now it completes, finally block runs with frozen=true
+        mergeCanProceed.countDown();
+
         // Wait for the merge task to complete on the MERGE thread pool
         assertTrue("Listener should fire when last merge completes", latch.await(5, TimeUnit.SECONDS));
         assertTrue("Listener should have been fired", listenerFired.get());
+
+        // Wait for the freeze thread to finish
+        freezeThread.join(5000);
 
         // After merge completes, activeMerges should be back to 0
         assertEquals("Active merges should be 0 after completion", 0, scheduler.getActiveMergeCount());

@@ -26,7 +26,6 @@ use datafusion::{
     physical_plan::displayable,
     physical_plan::execute_stream,
     execution::SessionStateBuilder,
-    execution::runtime_env::RuntimeEnvBuilder,
     execution::context::SessionContext,
     common::DataFusionError,
     prelude::*,
@@ -34,8 +33,6 @@ use datafusion::{
     catalog::Session,
     common::tree_node::{TreeNode, TreeNodeRecursion},
     datasource::{TableProvider, TableType},
-    execution::cache::cache_manager::{CacheManagerConfig, CachedFileList},
-    execution::cache::{CacheAccessor, DefaultListFilesCache, TableScopedPath},
     execution::memory_pool::MemoryPool,
     execution::object_store::ObjectStoreUrl,
     logical_expr::Expr,
@@ -102,33 +99,12 @@ pub async fn execute_indexed_query(
     // Share caches with the global runtime (same as vanilla path): list-files
     // pre-populated with the reader's object_metas, file-metadata and
     // file-statistics inherited from the global runtime for cross-query reuse.
-    let list_file_cache = Arc::new(DefaultListFilesCache::default());
-    let table_scoped_path = TableScopedPath {
-        table: None,
-        path: shard_view.table_path.prefix().clone(),
-    };
-    list_file_cache.put(&table_scoped_path, CachedFileList::new(shard_view.object_metas.as_ref().clone()));
-
-    let mut runtime_env_builder = RuntimeEnvBuilder::from_runtime_env(&runtime.runtime_env)
-        .with_cache_manager(
-            CacheManagerConfig::default()
-                .with_list_files_cache(Some(list_file_cache))
-                .with_file_metadata_cache(Some(
-                    runtime.runtime_env.cache_manager.get_file_metadata_cache(),
-                ))
-                .with_metadata_cache_limit(
-                    runtime.runtime_env.cache_manager.get_metadata_cache_limit(),
-                )
-                .with_files_statistics_cache(
-                    runtime.runtime_env.cache_manager.get_file_statistic_cache(),
-                ),
-        );
-    if let Some(pool) = query_memory_pool {
-        runtime_env_builder = runtime_env_builder.with_memory_pool(pool);
-    }
-    let runtime_env = runtime_env_builder
-        .build()
-        .map_err(|e| DataFusionError::Execution(format!("runtime env: {}", e)))?;
+    let runtime_env = crate::runtime_helpers::build_query_runtime_env(
+        runtime,
+        &shard_view.table_path,
+        shard_view.object_metas.as_ref(),
+        query_memory_pool,
+    ).map_err(|e| DataFusionError::Execution(format!("runtime env: {}", e)))?;
 
     // Register shard-specific object store on file:// scheme for this query.
     runtime_env.register_object_store(
@@ -145,7 +121,7 @@ pub async fn execute_indexed_query(
     config.options_mut().execution.batch_size = query_config.batch_size;
     let state = SessionStateBuilder::new()
         .with_config(config)
-        .with_runtime_env(Arc::from(runtime_env))
+        .with_runtime_env(runtime_env)
         .with_default_features()
         .with_physical_optimizer_rules(crate::agg_mode::physical_optimizer_rules_without_combine())
         .build();

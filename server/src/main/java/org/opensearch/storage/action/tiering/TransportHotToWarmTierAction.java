@@ -191,7 +191,7 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
                             broadcastResponse.getFailedShards(),
                             request.getIndex()
                         );
-                        executePrepareTiering(request, state, listener, attempt + 1);
+                        retryPrepareTiering(request, state, listener, attempt);
                         return;
                     }
                     // Build a targeted error message based on failure type.
@@ -279,7 +279,7 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
                         request.getIndex(),
                         e
                     );
-                    executePrepareTiering(request, state, listener, attempt + 1);
+                    retryPrepareTiering(request, state, listener, attempt);
                     return;
                 }
                 String errorMsg = "Pre-tiering sync failed for DFA index ["
@@ -292,6 +292,19 @@ public class TransportHotToWarmTierAction extends TransportTierAction {
                 listener.onFailure(new IllegalStateException(errorMsg, e));
             }
         });
+    }
+
+    /**
+     * Retries the prepare tiering action with an incremented attempt counter.
+     * Common retry logic extracted from onResponse (shard failures) and onFailure (transport failures).
+     */
+    private void retryPrepareTiering(
+        IndexTieringRequest request,
+        ClusterState state,
+        ActionListener<AcknowledgedResponse> listener,
+        int attempt
+    ) {
+        executePrepareTiering(request, state, listener, attempt + 1);
     }
 
     /**

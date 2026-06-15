@@ -1666,22 +1666,25 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
 
     /**
      * Registers a listener that fires when all in-flight merge operations have completed.
-     * If merges are already drained (none active, none pending), returns true and the
-     * caller can proceed immediately. Otherwise, returns false and the listener will be
-     * invoked on the merge thread when the last merge finishes.
+     * If merges are already drained (none active, none pending), fires the listener
+     * immediately inline. Otherwise, the listener will be invoked on the merge thread
+     * when the last merge finishes.
      * <p>
-     * Only effective when the engine is a {@link DataFormatAwareEngine}; returns true
-     * (already drained) for other engine types since they don't use this merge scheduler.
+     * Only effective when the engine is a {@link DataFormatAwareEngine}; for other engine
+     * types, fires the listener immediately since they don't use this merge scheduler.
      *
      * @param listener the callback to fire when merges are drained
-     * @return true if already drained, false if listener was registered
      */
-    public boolean onMergesDrained(Runnable listener) {
+    public void onMergesDrained(Runnable listener) {
+        assert routingEntry().primary() : "onMergesDrained should only be called on primary shards";
         final Indexer engine = getIndexerOrNull();
         if (engine instanceof DataFormatAwareEngine dfa) {
-            return dfa.onMergesDrained(listener);
+            dfa.onMergesDrained(listener);
+        } else {
+            // Non-DFA engines: Lucene merges are managed by IndexWriter's internal merge scheduler,
+            // not by our MergeScheduler. Fire listener immediately — tiering only targets DFA indices.
+            listener.run();
         }
-        return true; // non-DFA engines have no merge scheduler — consider drained
     }
 
     /**

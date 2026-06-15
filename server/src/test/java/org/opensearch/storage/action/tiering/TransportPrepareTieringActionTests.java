@@ -341,39 +341,30 @@ public class TransportPrepareTieringActionTests extends OpenSearchTestCase {
             if (completed.compareAndSet(false, true)) {
                 int activeMerges = indexShard.getActiveMergeCount();
                 int pendingMerges = indexShard.getPendingMergeCount();
-                permit.close();
-                listener.onFailure(
-                    new MergeDrainTimeoutException(shardRouting.shardId(), activeMerges, pendingMerges, mergeTimeout.toString())
-                );
+                try {
+                    listener.onFailure(
+                        new MergeDrainTimeoutException(shardRouting.shardId(), activeMerges, pendingMerges, mergeTimeout.toString())
+                    );
+                } finally {
+                    permit.close();
+                }
             }
         }, effectiveTimeout, ThreadPool.Names.GENERIC);
 
         // Non-blocking merge wait
-        boolean alreadyDrained = indexShard.onMergesDrained(() -> {
+        indexShard.onMergesDrained(() -> {
             if (completed.compareAndSet(false, true)) {
                 timeout.cancel();
                 try {
                     completeSyncAndFlushForTest(indexShard, shardRouting);
-                    permit.close();
                     listener.onResponse(null);
                 } catch (Exception e) {
-                    permit.close();
                     listener.onFailure(e);
+                } finally {
+                    permit.close();
                 }
             }
         });
-
-        if (alreadyDrained && completed.compareAndSet(false, true)) {
-            timeout.cancel();
-            try {
-                completeSyncAndFlushForTest(indexShard, shardRouting);
-                permit.close();
-                listener.onResponse(null);
-            } catch (Exception e) {
-                permit.close();
-                listener.onFailure(e);
-            }
-        }
     }
 
     /**
@@ -394,7 +385,7 @@ public class TransportPrepareTieringActionTests extends OpenSearchTestCase {
     }
 
     /**
-     * Tests that when merges are already drained (onMergesDrained returns true),
+     * Tests that when merges are already drained (onMergesDrained fires listener immediately),
      * the listener fires immediately with a successful response, and no timeout fires.
      */
     public void testShardOperationAsync_AlreadyDrained_CompletesImmediately() throws Exception {
@@ -402,7 +393,12 @@ public class TransportPrepareTieringActionTests extends OpenSearchTestCase {
         try {
             mockPermitAcquisitionSuccess();
             when(mockIndexShard.state()).thenReturn(IndexShardState.STARTED);
-            when(mockIndexShard.onMergesDrained(any(Runnable.class))).thenReturn(true);
+            // When onMergesDrained is called, immediately invoke the Runnable (simulating already drained)
+            doAnswer(invocation -> {
+                Runnable callback = invocation.getArgument(0);
+                callback.run();
+                return null;
+            }).when(mockIndexShard).onMergesDrained(any(Runnable.class));
 
             AtomicReference<Void> responseRef = new AtomicReference<>();
             AtomicReference<Exception> failureRef = new AtomicReference<>();
@@ -441,7 +437,7 @@ public class TransportPrepareTieringActionTests extends OpenSearchTestCase {
     }
 
     /**
-     * Tests that when merges are not yet drained (onMergesDrained returns false),
+     * Tests that when merges are not yet drained (onMergesDrained registers listener),
      * the listener is registered and fires later when the drain callback is invoked.
      * Verifies that completeSyncAndFlush operations are performed after drain.
      */
@@ -451,9 +447,12 @@ public class TransportPrepareTieringActionTests extends OpenSearchTestCase {
             mockPermitAcquisitionSuccess();
             when(mockIndexShard.state()).thenReturn(IndexShardState.STARTED);
 
-            // Capture the Runnable passed to onMergesDrained
+            // Capture the Runnable passed to onMergesDrained (do not invoke it yet)
             ArgumentCaptor<Runnable> drainCallbackCaptor = ArgumentCaptor.forClass(Runnable.class);
-            when(mockIndexShard.onMergesDrained(drainCallbackCaptor.capture())).thenReturn(false);
+            doAnswer(invocation -> {
+                // Do nothing — simulate merges not yet drained
+                return null;
+            }).when(mockIndexShard).onMergesDrained(drainCallbackCaptor.capture());
 
             AtomicReference<Void> responseRef = new AtomicReference<>();
             AtomicReference<Exception> failureRef = new AtomicReference<>();
@@ -510,8 +509,8 @@ public class TransportPrepareTieringActionTests extends OpenSearchTestCase {
             mockPermitAcquisitionSuccess();
             when(mockIndexShard.state()).thenReturn(IndexShardState.STARTED);
 
-            // onMergesDrained returns false and the callback is never invoked (simulates stuck merges)
-            when(mockIndexShard.onMergesDrained(any(Runnable.class))).thenReturn(false);
+            // onMergesDrained captures the callback but never invokes it (simulates stuck merges)
+            doAnswer(invocation -> null).when(mockIndexShard).onMergesDrained(any(Runnable.class));
 
             // Mock merge counts for the timeout diagnostic message
             when(mockIndexShard.getActiveMergeCount()).thenReturn(3);
@@ -658,7 +657,7 @@ public class TransportPrepareTieringActionTests extends OpenSearchTestCase {
 
             // Capture the drain callback so we can invoke it manually
             ArgumentCaptor<Runnable> drainCallbackCaptor = ArgumentCaptor.forClass(Runnable.class);
-            when(mockIndexShard.onMergesDrained(drainCallbackCaptor.capture())).thenReturn(false);
+            doAnswer(invocation -> null).when(mockIndexShard).onMergesDrained(drainCallbackCaptor.capture());
 
             // Mock merge counts for potential timeout path
             when(mockIndexShard.getActiveMergeCount()).thenReturn(1);
@@ -715,7 +714,11 @@ public class TransportPrepareTieringActionTests extends OpenSearchTestCase {
         try {
             mockPermitAcquisitionSuccess();
             when(mockIndexShard.state()).thenReturn(IndexShardState.STARTED);
-            when(mockIndexShard.onMergesDrained(any(Runnable.class))).thenReturn(true);
+            doAnswer(invocation -> {
+                Runnable callback = invocation.getArgument(0);
+                callback.run();
+                return null;
+            }).when(mockIndexShard).onMergesDrained(any(Runnable.class));
 
             CountDownLatch latch = new CountDownLatch(1);
 
@@ -749,7 +752,7 @@ public class TransportPrepareTieringActionTests extends OpenSearchTestCase {
         try {
             mockPermitAcquisitionSuccess();
             when(mockIndexShard.state()).thenReturn(IndexShardState.STARTED);
-            when(mockIndexShard.onMergesDrained(any(Runnable.class))).thenReturn(false);
+            doAnswer(invocation -> null).when(mockIndexShard).onMergesDrained(any(Runnable.class));
             when(mockIndexShard.getActiveMergeCount()).thenReturn(1);
             when(mockIndexShard.getPendingMergeCount()).thenReturn(0);
 
@@ -788,7 +791,7 @@ public class TransportPrepareTieringActionTests extends OpenSearchTestCase {
 
             // Capture the drain callback
             ArgumentCaptor<Runnable> drainCallbackCaptor = ArgumentCaptor.forClass(Runnable.class);
-            when(mockIndexShard.onMergesDrained(drainCallbackCaptor.capture())).thenReturn(false);
+            doAnswer(invocation -> null).when(mockIndexShard).onMergesDrained(drainCallbackCaptor.capture());
 
             // Make sync() throw to exercise the exception path in the drain callback
             doThrow(new IOException("sync failed in drain callback")).when(mockIndexShard).sync();
@@ -839,7 +842,7 @@ public class TransportPrepareTieringActionTests extends OpenSearchTestCase {
             when(mockIndexShard.state()).thenReturn(IndexShardState.STARTED);
 
             ArgumentCaptor<Runnable> drainCallbackCaptor = ArgumentCaptor.forClass(Runnable.class);
-            when(mockIndexShard.onMergesDrained(drainCallbackCaptor.capture())).thenReturn(false);
+            doAnswer(invocation -> null).when(mockIndexShard).onMergesDrained(drainCallbackCaptor.capture());
             when(mockIndexShard.getActiveMergeCount()).thenReturn(2);
             when(mockIndexShard.getPendingMergeCount()).thenReturn(1);
 
@@ -934,8 +937,8 @@ public class TransportPrepareTieringActionTests extends OpenSearchTestCase {
             mockPermitAcquisitionSuccess();
             when(mockIndexShard.state()).thenReturn(IndexShardState.STARTED);
 
-            // onMergesDrained returns false and the callback is never invoked (simulates stuck merges)
-            when(mockIndexShard.onMergesDrained(any(Runnable.class))).thenReturn(false);
+            // onMergesDrained captures the callback but never invokes it (simulates stuck merges)
+            doAnswer(invocation -> null).when(mockIndexShard).onMergesDrained(any(Runnable.class));
 
             // Set specific merge counts for verification
             when(mockIndexShard.getActiveMergeCount()).thenReturn(5);
@@ -1045,7 +1048,11 @@ public class TransportPrepareTieringActionTests extends OpenSearchTestCase {
         try {
             mockPermitAcquisitionSuccess();
             when(mockIndexShard.state()).thenReturn(IndexShardState.STARTED);
-            when(mockIndexShard.onMergesDrained(any(Runnable.class))).thenReturn(true);
+            doAnswer(invocation -> {
+                Runnable callback = invocation.getArgument(0);
+                callback.run();
+                return null;
+            }).when(mockIndexShard).onMergesDrained(any(Runnable.class));
 
             CountDownLatch latch = new CountDownLatch(1);
 
@@ -1072,5 +1079,24 @@ public class TransportPrepareTieringActionTests extends OpenSearchTestCase {
         } finally {
             terminate(testThreadPool);
         }
+    }
+
+    /**
+     * Verifies that PrepareTieringRequest creates a ClusterAdminTask (cancellable with timeout).
+     */
+    public void testCreateTask_ReturnsClusterAdminTask() {
+        PrepareTieringRequest request = new PrepareTieringRequest("my-index");
+        request.timeout(TimeValue.timeValueSeconds(90));
+
+        org.opensearch.tasks.Task task = request.createTask(
+            1,
+            "transport",
+            "internal:admin/indices/prepare_tiering",
+            org.opensearch.core.tasks.TaskId.EMPTY_TASK_ID,
+            java.util.Collections.emptyMap()
+        );
+
+        assertTrue("Task should be a CancellableTask", task instanceof org.opensearch.tasks.CancellableTask);
+        assertTrue("Task should be a ClusterAdminTask", task instanceof org.opensearch.rest.action.admin.cluster.ClusterAdminTask);
     }
 }

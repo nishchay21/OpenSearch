@@ -45,6 +45,7 @@ pub mod project_row_id_optimizer;
 pub mod query_budget;
 pub mod query_executor;
 pub mod query_tracker;
+pub mod runtime_helpers;
 pub mod relabel_exec;
 pub mod shard_table_provider;
 pub mod runtime_manager;
